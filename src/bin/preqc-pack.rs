@@ -10,6 +10,7 @@ mod cmd;
 
 use structopt::StructOpt;
 use cmd::meta;
+use cmd::merge;
 
 /// A suite of programs for interacting with bam file
 #[derive(StructOpt, Debug)]
@@ -31,7 +32,9 @@ struct Opt {
 #[derive(Debug, PartialEq, StructOpt)]
 enum SubCommands {
   #[structopt(name="meta")]
-  Meta(meta::Arguments)
+  Meta(meta::Arguments),
+  #[structopt(name="merge")]
+  Merge(merge::Arguments)
 }
 
 fn main() {
@@ -48,6 +51,9 @@ fn main() {
   match opt.cmd {
     SubCommands::Meta(arguments) => {
       meta::run(&arguments);
+    },
+    SubCommands::Merge(arguments) => {
+      merge::run(&arguments);
     }
   }
 }

@@ -1,11 +1,13 @@
 extern crate flate2;
 
 use flate2::bufread::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use seq_io::fastq::{Reader, Record};
 use seq_io::parallel::parallel_fastq;
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::BufReader;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write, BufReader, BufWriter};
 use std::str;
 
 const BUFFER_SIZE: usize = 512000;
@@ -20,8 +22,11 @@ pub fn init_fastqc(datasize: usize) -> FastQC {
 }
 
 pub fn compute_data_size_par(filepath: &str) -> FastQC {
-  let gz_reader = GzDecoder::new(BufReader::with_capacity(BUFFER_SIZE, File::open(filepath).unwrap()))
-    .expect("Not valid gzip format.");
+  let gz_reader = GzDecoder::new(BufReader::with_capacity(
+    BUFFER_SIZE,
+    File::open(filepath).unwrap(),
+  ))
+  .expect("Not valid gzip format.");
   let reader = Reader::with_capacity(gz_reader, BUFFER_SIZE);
 
   let mut datasize: usize = 0;
@@ -86,4 +91,36 @@ pub fn compute_data_size(filepath: &str) -> FastQC {
   return FastQC {
     datasize: datasize * 150,
   };
+}
+
+pub fn zcat_slow(infile: &str, output: &str) {
+  let gz_reader = GzDecoder::new(File::open(infile).map(BufReader::new).unwrap())
+    .expect("Not valid gzip format.");
+  let mut reader = Reader::new(gz_reader);
+
+  let f = OpenOptions::new().append(true).create(true).open(output);
+
+  let mut gz_writer = GzEncoder::new(f.map(BufWriter::new).unwrap(), Compression::default());
+
+  while let Some(record) = reader.next() {
+    let record = record.expect("Error reading record");
+    record.write(&mut gz_writer).unwrap();
+  }
+}
+
+pub fn zcat(infile: &str, output: &str) {
+  let input = File::open(infile).unwrap();
+  let mut reader = BufReader::new(input);
+  let f = OpenOptions::new().append(true).create(true).open(output);
+  let mut output = f.map(BufWriter::new).unwrap();
+
+  let mut in_buf = [0; 1024 * 64];
+
+  while let Ok(n) = reader.read(&mut in_buf) {
+    if n == 0 {
+      break;
+    }
+    
+    output.write_all(&in_buf[..n]).unwrap();
+  }
 }
