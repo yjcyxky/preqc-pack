@@ -1,11 +1,6 @@
-extern crate exitcode;
-extern crate preqc_pack;
-extern crate regex;
-extern crate serde_json;
 
 use log::*;
 use preqc_pack::{fastqc, hasher};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -25,6 +20,10 @@ pub struct Arguments {
   /// A hash algorithms for output file.
   #[structopt(name="algorithm", short="m", long="algorithm", possible_values=&["md5sum", "blake2b"], default_value="md5sum")]
   algorithm: String,
+
+  /// Which module will be called.
+  #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "fastqc", "all"], default_value="all")]
+  which: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -33,49 +32,50 @@ struct QCPack {
   filemeta: hasher::Meta,
 }
 
-fn is_fastq_file(filepath: &str) -> bool {
-  // Import at the crate root - preqc-pack.rs
-  lazy_static! {
-    static ref RE: Regex = Regex::new(".*(.fq|.fastq)$").unwrap();
-  }
-
-  RE.is_match(filepath)
+fn checksum(input: &str, algorithm: &str) -> hasher::Meta {
+  // Get filemeta
+  let mut file = fs::File::open(input).unwrap();
+  let meta = match algorithm {
+    "blake2b" => hasher::process::<Blake2b, _>(&mut file),
+    _ => hasher::process::<Md5, _>(&mut file),
+  };
+  meta
 }
 
-fn is_fastq_gz_file(filepath: &str) -> bool {
-  // Import at the crate root - preqc-pack.rs
-  lazy_static! {
-    static ref RE: Regex = Regex::new(".*(.fq.gz|.fastq.gz)$").unwrap();
+fn fastqc(input: &str) -> fastqc::FastQC {
+  let mut fastqc_metrics = fastqc::init_fastqc(0);
+  if preqc_pack::is_fastq_file(input) {
+    // Generate fastqc metrics
+    fastqc_metrics = fastqc::compute_data_size(input);
+  } else if preqc_pack::is_fastq_gz_file(input) {
+    // fastqc_metrics = fastqc::compute_gz_data_size(input);
+    fastqc_metrics = fastqc::compute_data_size_par(input);
+  } else {
+    error!("Not a valid fastq/fastq.gz file")
   }
 
-  RE.is_match(filepath)
+  fastqc_metrics
 }
 
 pub fn run(args: &Arguments) {
   if Path::new(&args.input).exists() {
     // TODO: Multi threads?
-    // Get filemeta
-    let mut file = fs::File::open(&args.input).unwrap();
-    let meta = match &args.algorithm[..] {
-      "blake2b" => hasher::process::<Blake2b, _>(&mut file),
-      _ => hasher::process::<Md5, _>(&mut file),
-    };
+    let fastqc_metrics = fastqc::init_fastqc(0);
+    let meta = hasher::init_meta();
 
-    let mut fastqc_metrics = fastqc::init_fastqc(0);
-    if is_fastq_file(&args.input) {
-      // Generate fastqc metrics
-      fastqc_metrics = fastqc::compute_data_size(&args.input);
-    } else if is_fastq_gz_file(&args.input) {
-      // fastqc_metrics = fastqc::compute_gz_data_size(&args.input);
-      fastqc_metrics = fastqc::compute_data_size_par(&args.input);
-    } else {
-      error!("Not a valid fastq/fastq.gz file")
-    }
-
-    let qc_pack = QCPack {
+    let mut qc_pack = QCPack {
       fastqc: fastqc_metrics,
       filemeta: meta,
     };
+
+    if args.which == "checksum" {
+      qc_pack.filemeta = checksum(&args.input, &args.algorithm);
+    } else if args.which == "fastqc" {
+      qc_pack.fastqc = fastqc(&args.input);
+    } else {
+      qc_pack.filemeta = checksum(&args.input, &args.algorithm);
+      qc_pack.fastqc = fastqc(&args.input);
+    }
 
     println!("{}", serde_json::to_string(&qc_pack).unwrap());
   } else {

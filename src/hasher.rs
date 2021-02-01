@@ -1,5 +1,3 @@
-extern crate serde;
-
 use digest::{Digest, Output};
 use serde::{Deserialize, Serialize};
 use std::io::Read;

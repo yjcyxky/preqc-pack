@@ -1,10 +1,5 @@
-extern crate exitcode;
-extern crate regex;
-extern crate serde_json;
-
 use log::*;
 use preqc_pack::fastqc;
-use regex::Regex;
 use std::path::Path;
 use structopt::StructOpt;
 
@@ -19,24 +14,6 @@ pub struct Arguments {
   /// Output file.
   #[structopt(name = "output", short = "o", long = "output")]
   output: String,
-}
-
-fn is_fastq_file(filepath: &str) -> bool {
-  // Import at the crate root - preqc-pack.rs
-  lazy_static! {
-    static ref RE: Regex = Regex::new(".*(.fq|.fastq)$").unwrap();
-  }
-
-  RE.is_match(filepath)
-}
-
-fn is_fastq_gz_file(filepath: &str) -> bool {
-  // Import at the crate root - preqc-pack.rs
-  lazy_static! {
-    static ref RE: Regex = Regex::new(".*(.fq.gz|.fastq.gz)$").unwrap();
-  }
-
-  RE.is_match(filepath)
 }
 
 fn exists(files: &Vec<String>) -> bool {
