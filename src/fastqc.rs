@@ -25,8 +25,8 @@ pub fn compute_data_size_par(filepath: &str) -> FastQC {
   let gz_reader = GzDecoder::new(BufReader::with_capacity(
     BUFFER_SIZE,
     File::open(filepath).unwrap(),
-  ))
-  .expect("Not valid gzip format.");
+  ));
+
   let reader = Reader::with_capacity(gz_reader, BUFFER_SIZE);
 
   let mut datasize: usize = 0;
@@ -60,8 +60,7 @@ pub fn compute_data_size_par(filepath: &str) -> FastQC {
 
 #[allow(unused_variables)]
 pub fn compute_gz_data_size(filepath: &str) -> FastQC {
-  let gz_reader = GzDecoder::new(File::open(filepath).map(BufReader::new).unwrap())
-    .expect("Not valid gzip format.");
+  let gz_reader = GzDecoder::new(File::open(filepath).map(BufReader::new).unwrap());
   let mut reader = Reader::new(gz_reader);
 
   let mut datasize: usize = 0;
@@ -94,8 +93,7 @@ pub fn compute_data_size(filepath: &str) -> FastQC {
 }
 
 pub fn zcat_slow(infile: &str, output: &str) {
-  let gz_reader = GzDecoder::new(File::open(infile).map(BufReader::new).unwrap())
-    .expect("Not valid gzip format.");
+  let gz_reader = GzDecoder::new(File::open(infile).map(BufReader::new).unwrap());
   let mut reader = Reader::new(gz_reader);
 
   let f = OpenOptions::new().append(true).create(true).open(output);

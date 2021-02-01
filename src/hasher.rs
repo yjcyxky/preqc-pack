@@ -1,7 +1,7 @@
 extern crate serde;
 
-use serde::{Deserialize, Serialize};
 use digest::{Digest, Output};
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 
 const BUFFER_SIZE: usize = 51200;
@@ -10,6 +10,13 @@ const BUFFER_SIZE: usize = 51200;
 pub struct Meta {
     md5sum: String,
     filesize: usize,
+}
+
+pub fn init_meta() -> Meta {
+    return Meta {
+        md5sum: String::from(""),
+        filesize: 0,
+    };
 }
 
 /// Compute digest value for given `Reader` and print it
