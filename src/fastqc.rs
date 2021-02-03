@@ -7,7 +7,7 @@ use seq_io::fastq::{Reader, Record};
 use seq_io::parallel::parallel_fastq;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write, BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::str;
 
 const BUFFER_SIZE: usize = 512000;
@@ -118,7 +118,7 @@ pub fn zcat(infile: &str, output: &str) {
     if n == 0 {
       break;
     }
-    
+
     output.write_all(&in_buf[..n]).unwrap();
   }
 }

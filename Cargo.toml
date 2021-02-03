@@ -25,3 +25,4 @@ structopt = "0.3.17"
 
 [profile.release]
 debug = false
+opt-level = 3

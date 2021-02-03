@@ -1,7 +1,5 @@
-
 use log::*;
-use preqc_pack::{fastqc, hasher};
-use serde::{Deserialize, Serialize};
+use preqc_pack::{fastqc, hasher, QCPack};
 use std::fs;
 use std::path::Path;
 use structopt::StructOpt;
@@ -24,12 +22,6 @@ pub struct Arguments {
   /// Which module will be called.
   #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "fastqc", "all"], default_value="all")]
   which: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct QCPack {
-  fastqc: fastqc::FastQC,
-  filemeta: hasher::Meta,
 }
 
 fn checksum(input: &str, algorithm: &str) -> hasher::Meta {
@@ -60,24 +52,17 @@ fn fastqc(input: &str) -> fastqc::FastQC {
 pub fn run(args: &Arguments) {
   if Path::new(&args.input).exists() {
     // TODO: Multi threads?
-    let fastqc_metrics = fastqc::init_fastqc(0);
-    let meta = hasher::init_meta();
-
-    let mut qc_pack = QCPack {
-      fastqc: fastqc_metrics,
-      filemeta: meta,
-    };
-
     if args.which == "checksum" {
-      qc_pack.filemeta = checksum(&args.input, &args.algorithm);
+      let md5sum = checksum(&args.input, &args.algorithm);
+      println!("{}", serde_json::to_string(&md5sum).unwrap());
     } else if args.which == "fastqc" {
-      qc_pack.fastqc = fastqc(&args.input);
+      println!("{}", serde_json::to_string(&fastqc(&args.input)).unwrap());
     } else {
-      qc_pack.filemeta = checksum(&args.input, &args.algorithm);
-      qc_pack.fastqc = fastqc(&args.input);
+      let mut qc_pack = QCPack::new();
+      qc_pack.set_filemeta(checksum(&args.input, &args.algorithm));
+      qc_pack.set_fastqc(fastqc(&args.input));
+      println!("{}", serde_json::to_string(&qc_pack).unwrap());
     }
-
-    println!("{}", serde_json::to_string(&qc_pack).unwrap());
   } else {
     error!("{} - Not Found: {:?}", module_path!(), args.input);
   }

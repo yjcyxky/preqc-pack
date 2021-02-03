@@ -2,10 +2,34 @@
 #[macro_use]
 extern crate lazy_static;
 
-pub mod hasher;
 pub mod fastqc;
+pub mod hasher;
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct QCPack {
+  fastqc: fastqc::FastQC,
+  filemeta: hasher::Meta,
+}
+
+impl QCPack {
+  pub fn new() -> QCPack {
+    return QCPack {
+      fastqc: fastqc::init_fastqc(0),
+      filemeta: hasher::init_meta(),
+    };
+  }
+
+  pub fn set_fastqc(&mut self, fastqc: fastqc::FastQC) {
+    self.fastqc = fastqc;
+  }
+
+  pub fn set_filemeta(&mut self, filemeta: hasher::Meta) {
+    self.filemeta = filemeta;
+  }
+}
 
 pub fn is_fastq_file(filepath: &str) -> bool {
   // Import at the crate root - preqc-pack.rs
