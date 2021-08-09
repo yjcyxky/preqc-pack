@@ -1,6 +1,4 @@
-#[macro_use]
 extern crate log;
-#[macro_use]
 extern crate structopt;
 extern crate stderrlog;
 
@@ -35,7 +33,8 @@ enum SubCommands {
   Merge(merge::Arguments)
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
   let opt = Opt::from_args();
 
   stderrlog::new()
@@ -48,7 +47,7 @@ fn main() {
 
   match opt.cmd {
     SubCommands::Meta(arguments) => {
-      meta::run(&arguments);
+      meta::run(&arguments).await;
     },
     SubCommands::Merge(arguments) => {
       merge::run(&arguments);
