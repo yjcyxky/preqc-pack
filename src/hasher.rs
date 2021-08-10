@@ -1,12 +1,12 @@
 use crate::util;
 use digest::{Digest, Output};
-use futures::future::join_all;
 use log::*;
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
 use s3::region::Region;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
+use std::time::Instant;
 
 const BUFFER_SIZE: usize = 51200;
 #[derive(Serialize, Deserialize)]
@@ -120,16 +120,18 @@ where
   let nums = file_size / (chunk_size * n_threads) + 1;
 
   for n in 1..nums + 1 {
-    let mut vec = Vec::new();
+    let mut tasks = Vec::new();
 
+    let join_all_time = Instant::now();
     for idx in 1..n_threads + 1 {
-      info!(
-        "start: {:?}, end: {:?}, n: {:?}, nums: {:?}, idx: {:?}, n_threads: {:?}\n",
+      print!(
+        "start: {:?}, end: {:?}, n: {:?}, nums: {:?}, idx: {:?}, n_threads: {:?}, ",
         start, end, n, nums, idx, n_threads
       );
 
       let task = bucket.get_object_range(&filepath[..], start, Some(end));
-      vec.push(task);
+      tasks.push(task);
+      print!("The length of Vector: {:?}\n", tasks.len());
 
       if end == file_size {
         break;
@@ -143,14 +145,15 @@ where
       }
     }
 
-    {
-      let data = join_all(vec).await;
-
-      for i in data {
-        let (temp, _code) = i.unwrap();
-        sh.update(&temp);
-      }
+    for handle in tasks {
+      let (temp, _code) = handle.await.unwrap();
+      sh.update(&temp);
     }
+
+    println!(
+      "Joining all handles: {}ms",
+      join_all_time.elapsed().as_millis()
+    );
   }
 
   return Meta {

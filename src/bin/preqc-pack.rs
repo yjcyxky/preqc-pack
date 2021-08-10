@@ -1,6 +1,11 @@
 extern crate log;
 extern crate structopt;
 extern crate stderrlog;
+use jemallocator;
+use jemalloc_ctl::{AsName, Access};
+
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 mod cmd;
 
