@@ -1,10 +1,12 @@
 use crate::util;
 use digest::{Digest, Output};
 use log::*;
+use memmap2::{MmapAsRawDesc, MmapOptions};
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
 use s3::region::Region;
 use serde::{Deserialize, Serialize};
+use std::fs::File;
 use std::io::Read;
 use std::time::Instant;
 
@@ -28,6 +30,31 @@ pub fn init_meta() -> Meta {
   return Meta {
     md5sum: String::from(""),
     filesize: 0,
+  };
+}
+
+/// Compute digest value for given `Reader` and print it
+/// On any error simply return without doing anything
+pub fn process_mmap<D: Digest + Default>(reader: &File) -> Meta
+where
+  Output<D>: core::fmt::LowerHex,
+{
+  let mut sh = D::new();
+  let mmap = unsafe { MmapOptions::new().map(reader).unwrap() };
+  let filesize: usize = mmap.len();
+  let n = filesize / BUFFER_SIZE;
+
+  for i in 1..n + 1 {
+    sh.update(&mmap[(i - 1) * BUFFER_SIZE..i * BUFFER_SIZE]);
+
+    if filesize - i * BUFFER_SIZE < BUFFER_SIZE {
+      sh.update(&mmap[i * BUFFER_SIZE..filesize])
+    }
+  }
+
+  return Meta {
+    filesize: filesize,
+    md5sum: format!("{:x}", sh.finalize()),
   };
 }
 

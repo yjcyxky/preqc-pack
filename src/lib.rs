@@ -5,6 +5,7 @@ extern crate lazy_static;
 pub mod fastqc;
 pub mod hasher;
 pub mod util;
+pub mod qc;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};

@@ -26,6 +26,7 @@ tokio = {version = "1", features = ["full"]}
 futures = "0.3.5"
 jemallocator = "0.3.2"
 jemalloc-ctl = "0.3.2"
+memmap2 = { version = "0.5.0", default-features = false }
 
 [dependencies.jemalloc-sys]
 version = "0.3.2"

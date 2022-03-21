@@ -94,6 +94,15 @@ fn checksum(input: &str, algorithm: &str) -> hasher::Meta {
   meta
 }
 
+fn checksum_mmap(input: &str, algorithm: &str) -> hasher::Meta {
+  let file = fs::File::open(input).unwrap();
+  let meta = match algorithm {
+    "blake2b" => hasher::process_mmap::<Blake2b>(&file),
+    _ => hasher::process_mmap::<Md5>(&file),
+  };
+  meta
+}
+
 fn fastqc(input: &str) -> fastqc::FastQC {
   // Generate fastqc metrics
   let fastqc_metrics = fastqc::compute_data_size(input);
