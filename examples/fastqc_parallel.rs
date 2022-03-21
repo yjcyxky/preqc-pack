@@ -5,7 +5,7 @@ use std::io::Error;
 use std::sync::{Arc, Mutex};
 
 fn test_process_sequence() {
-  let fastq_path = "/Users/choppy/Downloads/test.fq.gz";
+  let fastq_path = "/Users/choppy/Downloads/R20059384_merge_R1.fastq.gz";
   parse_path(Some(fastq_path), |parser| {
     let result: Result<Vec<_>, Error> = parser.parallel_each(5, move |record_sets| {
       let mut qc = FastQC::new();
