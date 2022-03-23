@@ -30,12 +30,12 @@ impl QCResults {
   }
 
   pub fn run_fastqc(fastq_path: &str, pattern_path: &str) -> QCResults {
-    let (patterns, count) = mislabeling::VAFMatrix::read_patterns(pattern_path);
+    let (patterns, indexes, count) = mislabeling::VAFMatrix::read_patterns(pattern_path);
 
     match parse_path(Some(fastq_path), |parser| {
       let result: Result<Vec<_>, Error> = parser.parallel_each(5, move |record_sets| {
         let mut qc = fastqc::FastQC::new();
-        let mut vaf_matrix = mislabeling::VAFMatrix::new(patterns.clone(), count);
+        let mut vaf_matrix = mislabeling::VAFMatrix::new(patterns.clone(), indexes.clone(), count);
         for record_set in record_sets {
           for record in record_set.iter() {
             qc.process_sequence(&record.to_owned_record());
@@ -53,9 +53,13 @@ impl QCResults {
       return match result {
         Ok(qc_results) => {
           let mut merged_qc = qc_results[0].fastqc().to_owned();
-          let merged_vaf_matrix = qc_results[0].vaf_matrix().to_owned();
+          let mut merged_vaf_matrix = qc_results[0].vaf_matrix().to_owned();
           for i in 1..qc_results.len() {
             merged_qc.merge(&[qc_results[i].fastqc().to_owned()]);
+          }
+
+          for i in 1..qc_results.len() {
+            merged_vaf_matrix.merge(&[qc_results[i].vaf_matrix().to_owned()]);
           }
 
           QCResults {

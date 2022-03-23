@@ -28,6 +28,7 @@ for row in csvreader:
 
 results = {
   "data": data,
+  "indexes": list(set(idx_values)),
   "count": max(idx_values) - min(idx_values) + 1
 }
 
