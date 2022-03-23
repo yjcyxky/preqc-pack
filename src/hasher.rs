@@ -104,7 +104,7 @@ where
 /// use s3::region::Region;
 /// use md5::Md5;
 ///
-/// let remote_path = "oss://choppy-app-example-data/RNAseq/test_fq/test_R2.fq.gz"
+/// let remote_path = "oss://choppy-app-example-data/RNAseq/test_fq/test_R2.fq.gz";
 /// let region = Region::Custom {
 ///   region: "cn-shang".to_owned(),
 ///   endpoint: "https://oss-cn-shanghai.aliyuncs.com".to_owned(),
@@ -116,7 +116,7 @@ where
 ///   None,
 ///   None,
 ///  ).unwrap();
-///  hasher::process_remote<Md5, _>(remote_path, region, credentials, 12, 8_388_608);
+///  hasher::process_remote::<Md5>(remote_path, region, credentials, 12, 8_388_608);
 ///
 /// ```
 pub async fn process_remote<D: Digest + Default>(

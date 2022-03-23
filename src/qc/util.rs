@@ -1,6 +1,5 @@
 use bson::Document;
 use core::panic;
-use std::collections::HashMap;
 use std::fs::File;
 
 use serde::{Deserialize, Serialize};
@@ -261,17 +260,35 @@ impl BaseGroup {
   }
 }
 
-// HashMap<String, [usize; 2]>
-pub fn read_patterns(bson_file: &str) -> Document {
-  let mut f = match File::open(bson_file) {
+/// Read SNP patterns from bson file.
+/// 
+/// NOTE: BSON Document -> HashMap<String, [usize; 2]>
+/// 
+/// # Arguments
+/// 
+/// * `pattern_file`: where is the pattern file.
+/// 
+/// # Example
+/// 
+/// ```
+/// extern crate preqc_pack;
+/// use preqc_pack::qc::util::read_patterns;
+/// use bson::Bson;
+/// 
+/// let content = read_patterns("data/patterns.bson");
+/// assert_eq!(&Bson::Array(vec![Bson::Int32(0), Bson::Int32(0)]), content.get("TCCTTGTCATATGTTTTTCTG").unwrap());
+/// ```
+/// 
+pub fn read_patterns(pattern_file: &str) -> Document {
+  let mut f = match File::open(pattern_file) {
     Ok(f) => f,
-    Err(msg) => panic!("Cannot open {} - {}", bson_file, msg),
+    Err(msg) => panic!("Cannot open {} - {}", pattern_file, msg),
   };
 
   return match Document::from_reader(&mut f) {
     Ok(content) => content,
     Err(msg) => {
-      panic!("Cannot read pattern file {} - {}", bson_file, msg)
+      panic!("Cannot read pattern file {} - {}", pattern_file, msg)
     }
   };
 }
