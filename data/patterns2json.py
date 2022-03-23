@@ -16,14 +16,21 @@ def write2bson(data):
     bf.write(bson.dumps(data))    
 
 data = {}
+idx_values = []
 for row in csvreader:
   for field in row:
     if len(row) > 0:
       values = field.split('|')
       print(values)
       # values[0] --> Index, values[1] --> Alt/Ref
+      idx_values.append(int(values[0]))
       data[values[2]] = [int(values[0]), int(values[1])]
 
-write2json(data)
-write2bson(data)
+results = {
+  "data": data,
+  "count": max(idx_values) - min(idx_values) + 1
+}
+
+write2json(results)
+write2bson(results)
     

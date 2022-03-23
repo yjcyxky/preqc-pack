@@ -1,5 +1,5 @@
 use log::*;
-use preqc_pack::{hasher, qc, util, QCPack};
+use preqc_pack::{qc, util};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -9,9 +9,13 @@ use structopt::StructOpt;
 #[derive(StructOpt, PartialEq, Debug)]
 #[structopt(setting=structopt::clap::AppSettings::ColoredHelp, name="PreQC Tool Suite - Hasher", author="Jingcheng Yang <yjcyxky@163.com>")]
 pub struct Arguments {
-  /// Bam file to process
+  /// Fastq file to process
   #[structopt(name = "FILE")]
   input: String,
+
+  /// SNP pattern file (format: BSON).
+  #[structopt(name = "pattern-file", short="p", long="pattern-file")]
+  pattern_file: String,
 
   /// A hash algorithms for output file.
   #[structopt(name="algorithm", short="m", long="algorithm", possible_values=&["md5sum", "blake2b"], default_value="md5sum")]
@@ -26,7 +30,7 @@ pub struct Arguments {
   internal: bool,
 
   /// Which module will be called.
-  #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "all"], default_value="all")]
+  #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "fastqc", "all"], default_value="all")]
   which: String,
 
   /// The number of green threads.
@@ -53,11 +57,11 @@ pub struct Arguments {
 }
 
 pub async fn run(args: &Arguments) {
-  let md5sum: hasher::Meta;
+  let md5sum: qc::hasher::Meta;
   let mut output = String::from("");
 
   if util::is_remote_file(&args.input) {
-    md5sum = hasher::checksum_remote(
+    md5sum = qc::hasher::checksum_remote(
       &args.input,
       &args.algorithm,
       &args.region,
@@ -71,13 +75,15 @@ pub async fn run(args: &Arguments) {
     if Path::new(&args.input).exists() {
       // TODO: Multi threads?
       if args.which == "checksum" {
-        let md5sum = hasher::checksum(&args.input, &args.algorithm);
+        let md5sum = qc::hasher::checksum(&args.input, &args.algorithm);
         output = format!("{}", serde_json::to_string(&md5sum).unwrap());
+      } else if args.which == "fastqc" {
+        let qc = qc::QCResults::run_fastqc(&args.input, &args.pattern_file);
+        output = format!("{}", serde_json::to_string(&qc).unwrap());
       } else {
-        let mut qc_pack = QCPack::new();
-        qc_pack.set_filemeta(hasher::checksum(&args.input, &args.algorithm));
-        qc_pack.set_fastqc(qc::run_fastqc(&args.input));
-        output = format!("{}", serde_json::to_string(&qc_pack).unwrap());
+        let mut qc_results = qc::QCResults::run_fastqc(&args.input, &args.pattern_file);
+        qc_results.set_filemeta(Some(qc::hasher::checksum(&args.input, &args.algorithm)));
+        output = format!("{}", serde_json::to_string(&qc_results).unwrap());
       }
     } else {
       error!("{} - Not Found: {:?}", module_path!(), args.input);

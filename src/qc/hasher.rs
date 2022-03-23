@@ -14,7 +14,7 @@ use blake2::Blake2b;
 use md5::Md5;
 
 const BUFFER_SIZE: usize = 51200;
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Meta {
   md5sum: String,
   filesize: usize,
@@ -76,7 +76,7 @@ where
 /// # Example:
 ///
 /// ```no_run
-/// use preqc_pack::hasher;
+/// use preqc_pack::qc::hasher;
 /// use std::env;
 /// use s3::creds::Credentials;
 /// use s3::region::Region;

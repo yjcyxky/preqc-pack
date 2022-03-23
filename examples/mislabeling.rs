@@ -1,9 +1,9 @@
 extern crate preqc_pack;
-use preqc_pack::qc::util::read_patterns;
+use preqc_pack::qc::mislabeling::VAFMatrix;
 
 fn test_read_patterns() {
-  let content = read_patterns("data/patterns.bson");
-  println!("{:?}", content.get("TCCTTGTCATATGTTTTTCTG"));
+  let (patterns, count) = VAFMatrix::read_patterns("data/patterns.bson");
+  println!("{:?}, {:?}", count, patterns.get("TCCTTGTCATATGTTTTTCTG"));
 }
 
 fn main() {
