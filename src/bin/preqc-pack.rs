@@ -1,11 +1,6 @@
 extern crate log;
 extern crate structopt;
 extern crate stderrlog;
-use jemallocator;
-use jemalloc_ctl::{AsName, Access};
-
-#[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 mod cmd;
 
@@ -13,7 +8,7 @@ use structopt::StructOpt;
 use cmd::meta;
 use cmd::merge;
 
-/// A suite of programs for interacting with bam file
+/// A suite of programs for interacting with fastq file
 #[derive(StructOpt, Debug)]
 #[structopt(setting=structopt::clap::AppSettings::ColoredHelp, name = "PreQC Tool Suite (preqc-pack)", author="Jingcheng Yang <yjcyxky@163.com>")]
 struct Opt {

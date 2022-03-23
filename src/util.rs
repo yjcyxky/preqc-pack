@@ -1,4 +1,7 @@
 use regex::Regex;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::str;
 
 pub fn is_remote_file(remote_path: &str) -> bool {
   let re = Regex::new(r"(oss|s3)://.*$").unwrap();
@@ -14,4 +17,21 @@ pub fn parse_remote_path(remote_path: &str) -> (String, String, String) {
     String::from(&cap[2]),
     String::from(&cap[3]),
   );
+}
+
+pub fn zcat(infile: &str, output: &str) {
+  let input = File::open(infile).unwrap();
+  let mut reader = BufReader::new(input);
+  let f = OpenOptions::new().append(true).create(true).open(output);
+  let mut output = f.map(BufWriter::new).unwrap();
+
+  let mut in_buf = [0; 1024 * 64];
+
+  while let Ok(n) = reader.read(&mut in_buf) {
+    if n == 0 {
+      break;
+    }
+
+    output.write_all(&in_buf[..n]).unwrap();
+  }
 }

@@ -5,7 +5,11 @@ use fastq::parse_path;
 use serde_json;
 use std::io::Error;
 
-pub fn run_fastqc(fastq_path: &str) {
+pub fn init_fastqc() -> fastqc::FastQC {
+  return fastqc::FastQC::new();
+}
+
+pub fn run_fastqc(fastq_path: &str) -> fastqc::FastQC {
   match parse_path(Some(fastq_path), |parser| {
     let result: Result<Vec<_>, Error> = parser.parallel_each(5, move |record_sets| {
       let mut qc = fastqc::FastQC::new();
@@ -18,25 +22,25 @@ pub fn run_fastqc(fastq_path: &str) {
       return qc;
     });
 
-    match result {
+    return match result {
       Ok(o) => {
         if o.len() > 0 {
           let mut first = o[0].clone();
           first.merge(&o[1..]);
-          println!("{}", serde_json::to_string_pretty(&first).unwrap());
+          first
+          // println!("{}", serde_json::to_string_pretty(&first).unwrap());
         } else {
-          println!("No sequences")
+          init_fastqc()
         }
       }
       Err(msg) => {
-        eprintln!("Parse fastq file error: {}", msg);
+        panic!("Parse fastq file error: {}", msg);
       }
     };
-    return true;
   }) {
     Err(msg) => {
-      eprintln!("Cannot parse fastq file: {}", msg);
+      panic!("Cannot parse fastq file: {}", msg);
     }
-    _ => {}
-  };
+    Ok(o) => o,
+  }
 }

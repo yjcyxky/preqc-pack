@@ -1,14 +1,17 @@
 use crate::util;
 use digest::{Digest, Output};
 use log::*;
-use memmap2::{MmapAsRawDesc, MmapOptions};
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
 use s3::region::Region;
 use serde::{Deserialize, Serialize};
-use std::fs::File;
+use std::env;
+use std::fs;
 use std::io::Read;
 use std::time::Instant;
+
+use blake2::Blake2b;
+use md5::Md5;
 
 const BUFFER_SIZE: usize = 51200;
 #[derive(Serialize, Deserialize)]
@@ -30,31 +33,6 @@ pub fn init_meta() -> Meta {
   return Meta {
     md5sum: String::from(""),
     filesize: 0,
-  };
-}
-
-/// Compute digest value for given `Reader` and print it
-/// On any error simply return without doing anything
-pub fn process_mmap<D: Digest + Default>(reader: &File) -> Meta
-where
-  Output<D>: core::fmt::LowerHex,
-{
-  let mut sh = D::new();
-  let mmap = unsafe { MmapOptions::new().map(reader).unwrap() };
-  let filesize: usize = mmap.len();
-  let n = filesize / BUFFER_SIZE;
-
-  for i in 1..n + 1 {
-    sh.update(&mmap[(i - 1) * BUFFER_SIZE..i * BUFFER_SIZE]);
-
-    if filesize - i * BUFFER_SIZE < BUFFER_SIZE {
-      sh.update(&mmap[i * BUFFER_SIZE..filesize])
-    }
-  }
-
-  return Meta {
-    filesize: filesize,
-    md5sum: format!("{:x}", sh.finalize()),
   };
 }
 
@@ -187,4 +165,50 @@ where
     filesize: file_size as usize,
     md5sum: format!("{:x}", sh.finalize()),
   };
+}
+
+pub async fn checksum_remote(
+  input: &str,
+  algorithm: &str,
+  region: &str,
+  internal: bool,
+  n_threads: u64,
+  chunk_size: u64,
+) -> Meta {
+  // Get filemeta
+  let endpoint = if internal {
+    format!("https://oss-{}-internal.aliyuncs.com", region).to_owned()
+  } else {
+    format!("https://oss-{}.aliyuncs.com", region).to_owned()
+  };
+
+  let region = Region::Custom {
+    region: region.to_owned(),
+    endpoint: endpoint,
+  };
+
+  let credentials = Credentials::new(
+    Some(&env::var("OSS_ACCESS_KEY").unwrap()),
+    Some(&env::var("OSS_ACCESS_KEY_SECRET").unwrap()),
+    None,
+    None,
+    None,
+  )
+  .unwrap();
+
+  let meta = match algorithm {
+    "blake2b" => process_remote::<Blake2b>(input, region, credentials, n_threads, chunk_size).await,
+    _ => process_remote::<Md5>(input, region, credentials, n_threads, chunk_size).await,
+  };
+
+  meta
+}
+
+pub fn checksum(input: &str, algorithm: &str) -> Meta {
+  let mut file = fs::File::open(input).unwrap();
+  let meta = match algorithm {
+    "blake2b" => process::<Blake2b, _>(&mut file),
+    _ => process::<Md5, _>(&mut file),
+  };
+  meta
 }

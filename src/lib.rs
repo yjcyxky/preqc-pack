@@ -2,7 +2,6 @@
 #[macro_use]
 extern crate lazy_static;
 
-pub mod fastqc;
 pub mod hasher;
 pub mod util;
 pub mod qc;
@@ -12,19 +11,19 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct QCPack {
-  fastqc: fastqc::FastQC,
+  fastqc: qc::fastqc::FastQC,
   filemeta: hasher::Meta,
 }
 
 impl QCPack {
   pub fn new() -> QCPack {
     return QCPack {
-      fastqc: fastqc::init_fastqc(0),
+      fastqc: qc::init_fastqc(),
       filemeta: hasher::init_meta(),
     };
   }
 
-  pub fn set_fastqc(&mut self, fastqc: fastqc::FastQC) {
+  pub fn set_fastqc(&mut self, fastqc: qc::fastqc::FastQC) {
     self.fastqc = fastqc;
   }
 

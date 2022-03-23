@@ -1,5 +1,5 @@
 use log::*;
-use preqc_pack::fastqc;
+use preqc_pack::util;
 use std::path::Path;
 use structopt::StructOpt;
 
@@ -32,7 +32,7 @@ pub fn run(args: &Arguments) {
       // TODO: Multi threads?
       println!("Merge all intputs {:?} to {}", args.inputs, args.output);
       for input in args.inputs.clone() {
-        fastqc::zcat(&input, &args.output)
+        util::zcat(&input, &args.output)
       }
     } else {
       error!("{} - Not Found: {:?}", module_path!(), args.inputs);
