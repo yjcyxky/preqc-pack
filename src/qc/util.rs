@@ -1,4 +1,7 @@
+use bson::Document;
 use core::panic;
+use std::collections::HashMap;
+use std::fs::File;
 
 use serde::{Deserialize, Serialize};
 
@@ -73,7 +76,7 @@ impl QualityCount {
     let mut total = self.total_counts;
     total *= percentile;
     total /= 100;
-    
+
     let mut count: usize = 0;
     let mut i = offset;
     while i < self.actual_counts.len() {
@@ -256,4 +259,19 @@ impl BaseGroup {
 
     return groups;
   }
+}
+
+// HashMap<String, [usize; 2]>
+pub fn read_patterns(bson_file: &str) -> Document {
+  let mut f = match File::open(bson_file) {
+    Ok(f) => f,
+    Err(msg) => panic!("Cannot open {} - {}", bson_file, msg),
+  };
+
+  return match Document::from_reader(&mut f) {
+    Ok(content) => content,
+    Err(msg) => {
+      panic!("Cannot read pattern file {} - {}", bson_file, msg)
+    }
+  };
 }

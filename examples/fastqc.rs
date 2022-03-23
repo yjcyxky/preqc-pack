@@ -3,7 +3,7 @@ use fastq::parse_path;
 use preqc_pack::qc::fastqc::FastQC;
 
 fn test_process_sequence() {
-  let fastq_path = "/Users/choppy/Downloads/test.fq.gz";
+  let fastq_path = "examples/test.fastq.gz";
   let mut qc = FastQC::new();
   parse_path(Some(fastq_path), |parser| {
     parser
