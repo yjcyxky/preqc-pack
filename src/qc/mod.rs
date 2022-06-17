@@ -29,11 +29,11 @@ impl QCResults {
     self.filemeta = filemeta;
   }
 
-  pub fn run_fastqc(fastq_path: &str, pattern_path: &str) -> QCResults {
+  pub fn run_fastqc(fastq_path: &str, pattern_path: &str, n_threads: usize) -> QCResults {
     let (patterns, indexes, count) = mislabeling::VAFMatrix::read_patterns(pattern_path);
 
     match parse_path(Some(fastq_path), |parser| {
-      let result: Result<Vec<_>, Error> = parser.parallel_each(5, move |record_sets| {
+      let result: Result<Vec<_>, Error> = parser.parallel_each(n_threads, move |record_sets| {
         let mut qc = fastqc::FastQC::new();
         let mut vaf_matrix = mislabeling::VAFMatrix::new(patterns.clone(), indexes.clone(), count);
         for record_set in record_sets {

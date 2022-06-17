@@ -3,11 +3,11 @@ use preqc_pack::util;
 use std::path::Path;
 use structopt::StructOpt;
 
-/// A collection of metadata, such as file size, md5sum
+/// Merge several fastq files to one.
 #[derive(StructOpt, PartialEq, Debug)]
 #[structopt(setting=structopt::clap::AppSettings::ColoredHelp, name="PreQC Tool Suite - Merge", author="Jingcheng Yang <yjcyxky@163.com>")]
 pub struct Arguments {
-  /// Bam file to process
+  /// Fastq files
   #[structopt(name = "FILE", multiple = true, takes_value = true)]
   inputs: Vec<String>,
 
