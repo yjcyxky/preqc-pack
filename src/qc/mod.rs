@@ -43,12 +43,12 @@ impl QCResults {
             let result: Result<Vec<_>, Error> =
                 parser.parallel_each(n_threads, move |record_sets| {
                     let mut qc = fastqc::FastQC::new();
-                    let mut vaf_matrix =
-                        mislabeling::VAFMatrix::new(patterns.clone(), indexes.clone(), count);
+                    let mut vaf_matrix = mislabeling::VAFMatrix::new(&indexes, count);
                     for record_set in record_sets {
                         for record in record_set.iter() {
                             qc.process_sequence(&record.to_owned_record());
-                            vaf_matrix.process_sequence(&record.to_owned_record());
+                            vaf_matrix
+                                .process_sequence_unsafe(&patterns, &record.to_owned_record());
                         }
                     }
 
@@ -65,9 +65,6 @@ impl QCResults {
                     let mut merged_vaf_matrix = qc_results[0].vaf_matrix().to_owned();
                     for i in 1..qc_results.len() {
                         merged_qc.merge(&[qc_results[i].fastqc().to_owned()]);
-                    }
-
-                    for i in 1..qc_results.len() {
                         merged_vaf_matrix.merge(&[qc_results[i].vaf_matrix().to_owned()]);
                     }
 

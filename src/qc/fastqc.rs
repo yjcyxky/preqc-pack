@@ -679,20 +679,35 @@ impl FastQC {
     /// ```
     ///
     pub fn process_sequence(&mut self, record: &OwnedRecord) {
+        let mut seq_len = 0;
         for base in record.seq() {
-            // NOTE: to_string is expensive than from_utf8
-            match std::str::from_utf8(&[base.clone()]).unwrap() {
+            let base_char = *base as char;
+            match base_char {
                 // match char::from(base.clone()).to_uppercase().to_string().as_str() {
-                "T" => self.basic_stats.t_count += 1,
-                "C" => self.basic_stats.c_count += 1,
-                "G" => self.basic_stats.g_count += 1,
-                "A" => self.basic_stats.a_count += 1,
-                "N" => self.basic_stats.n_count += 1,
+                'T' => {
+                    self.basic_stats.t_count += 1;
+                    seq_len += 1;
+                }
+                'C' => {
+                    self.basic_stats.c_count += 1;
+                    seq_len += 1;
+                }
+                'G' => {
+                    self.basic_stats.g_count += 1;
+                    seq_len += 1;
+                }
+                'A' => {
+                    self.basic_stats.a_count += 1;
+                    seq_len += 1;
+                }
+                'N' => {
+                    self.basic_stats.n_count += 1;
+                    seq_len += 1;
+                }
                 _ => {}
             }
         }
 
-        let seq_len = record.seq().len();
         self.basic_stats.total_bases += seq_len;
         self.basic_stats.set_min_len(seq_len);
         self.basic_stats.set_max_len(seq_len);

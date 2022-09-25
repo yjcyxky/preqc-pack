@@ -11,8 +11,6 @@ const PATTERN_LENGTH: usize = 21;
 pub struct VAFMatrix {
     #[serde(skip_serializing)]
     length: usize,
-    #[serde(skip_serializing)]
-    patterns: Document,
     indexes: Vec<usize>,
     reference: Vec<Option<usize>>,
     alternative: Vec<Option<usize>>,
@@ -71,15 +69,14 @@ impl VAFMatrix {
         };
     }
 
-    pub fn new(patterns: Document, indexes: Vec<usize>, count: usize) -> VAFMatrix {
+    pub fn new(indexes: &Vec<usize>, count: usize) -> VAFMatrix {
         let mut init_values: Vec<Option<usize>> = vec![None; count];
         for i in indexes {
-            init_values[i] = Some(0);
+            init_values[*i] = Some(0);
         }
 
         return VAFMatrix {
             length: count,
-            patterns: patterns,
             indexes: (0..count).into_iter().collect(),
             reference: init_values.clone(),
             alternative: init_values.clone(),
@@ -113,22 +110,24 @@ impl VAFMatrix {
         }
     }
 
-    pub fn from_pattern_file(pattern_file: &str) -> VAFMatrix {
+    pub fn from_pattern_file(pattern_file: &str) -> (VAFMatrix, Document) {
         let (patterns, indexes, count) = VAFMatrix::read_patterns(pattern_file);
         let mut init_values = vec![None; count];
         for i in indexes {
             init_values[i] = Some(0);
         }
 
-        return VAFMatrix {
-            length: count,
-            indexes: (0..count).into_iter().collect(),
-            patterns: patterns,
-            reference: init_values.clone(),
-            alternative: init_values.clone(),
-            seq_alt_hited: vec![],
-            seq_ref_hited: vec![],
-        };
+        return (
+            VAFMatrix {
+                length: count,
+                indexes: (0..count).into_iter().collect(),
+                reference: init_values.clone(),
+                alternative: init_values.clone(),
+                seq_alt_hited: vec![],
+                seq_ref_hited: vec![],
+            },
+            patterns,
+        );
     }
 
     fn reset_seq_hited(&mut self) {
@@ -159,7 +158,68 @@ impl VAFMatrix {
         format!("{:x}", sh.finalize())
     }
 
-    pub fn process_sequence(&mut self, fastq_record: &OwnedRecord) {
+    pub fn process_sequence_unsafe(&mut self, patterns: &Document, fastq_record: &OwnedRecord) {
+        let seq = fastq_record.seq();
+        let length = seq.len();
+
+        self.reset_seq_hited();
+        for i in 0..length {
+            if PATTERN_LENGTH + i <= length {
+                let substr = &seq[i..PATTERN_LENGTH + i];
+
+                unsafe {
+                    // It assume the sequence which is from the fastq file has valid ASCII and UTF8 characters.
+                    let s = std::str::from_utf8_unchecked(substr);
+                    match patterns.get(s) {
+                        Some(matched) => {
+                            let matched_array = matched.as_array().unwrap();
+                            // matched_array: 0 - index; 1 - ref_or_alt;
+                            let index = matched_array[0].as_i32().unwrap() as usize;
+                            // For Debug
+                            // println!(
+                            //   "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
+                            //   self.hash::<Md5>(seq),
+                            //   index,
+                            //   s,
+                            //   matched_array[1].as_i32().unwrap()
+                            // );
+                            match matched_array[1].as_i32().unwrap() {
+                                // 0 = ref, 1 = alt
+                                1 => {
+                                    if !self.exists_in_seq_alt_hited(index) {
+                                        self.alternative[index] = match self.alternative[index] {
+                                            None => Some(1),
+                                            Some(num) => Some(num + 1),
+                                        };
+                                        self.seq_alt_hited.push(index);
+                                    }
+                                }
+                                0 => {
+                                    if !self.exists_in_seq_ref_hited(index) {
+                                        self.reference[index] = match self.reference[index] {
+                                            None => Some(1),
+                                            Some(num) => Some(num + 1),
+                                        };
+                                        self.seq_ref_hited.push(index);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        None => {
+                            // println!("No Matched Hash: {}", s);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Only need to record once even if it (the same SNP) is matched more than once in the same sequence.
+        self.reset_seq_hited();
+    }
+
+    pub fn process_sequence(&mut self, patterns: &Document, fastq_record: &OwnedRecord) {
         let seq = fastq_record.seq();
         let length = seq.len();
 
@@ -171,7 +231,7 @@ impl VAFMatrix {
                     Err(msg) => {
                         panic!("Cannot parse the sequence: {}", msg)
                     }
-                    Ok(s) => match self.patterns.get(s) {
+                    Ok(s) => match patterns.get(s) {
                         Some(matched) => {
                             let matched_array = matched.as_array().unwrap();
                             // matched_array: 0 - index; 1 - ref_or_alt;
