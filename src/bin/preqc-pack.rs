@@ -33,8 +33,7 @@ enum SubCommands {
   Merge(merge::Arguments)
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
   let opt = Opt::from_args();
 
   stderrlog::new()
@@ -47,7 +46,7 @@ async fn main() {
 
   match opt.cmd {
     SubCommands::Meta(arguments) => {
-      meta::run(&arguments).await;
+      meta::batch_run(&arguments);
     },
     SubCommands::Merge(arguments) => {
       merge::run(&arguments);

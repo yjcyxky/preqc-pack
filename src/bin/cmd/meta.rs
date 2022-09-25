@@ -3,105 +3,103 @@ use preqc_pack::{qc, util};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use std::thread;
 use structopt::StructOpt;
 
 /// A collection of metadata, such as file size, md5sum
 #[derive(StructOpt, PartialEq, Debug)]
 #[structopt(setting=structopt::clap::AppSettings::ColoredHelp, name="PreQC Tool Suite - Hasher", author="Jingcheng Yang <yjcyxky@163.com>")]
 pub struct Arguments {
-  /// Fastq file to process
-  #[structopt(name = "FILE")]
-  input: String,
+    /// FastQ R1 file to process (fastq.gz/fq.gz/fastq/fq)
+    #[structopt(name = "FASTQ R1")]
+    fastq_r1: String,
 
-  /// SNP pattern file (format: BSON).
-  #[structopt(name = "pattern-file", short="p", long="pattern-file", default_value="")]
-  pattern_file: String,
+    /// FastQ R2 file to process (fastq.gz/fq.gz/fastq/fq)
+    #[structopt(name = "FASTQ R2")]
+    fastq_r2: String,
 
-  /// A hash algorithms for output file.
-  #[structopt(name="algorithm", short="m", long="algorithm", possible_values=&["md5sum", "blake2b"], default_value="md5sum")]
-  algorithm: String,
+    /// SNP pattern file (format: BSON).
+    #[structopt(
+        name = "pattern-file",
+        short = "p",
+        long = "pattern-file",
+        default_value = ""
+    )]
+    pattern_file: String,
 
-  /// Which module will be called.
-  #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "fastqc", "all"], default_value="all")]
-  which: String,
+    /// A hash algorithms for output file.
+    #[structopt(name="algorithm", short="m", long="algorithm", possible_values=&["md5sum", "blake2b"], default_value="md5sum")]
+    algorithm: String,
 
-  /// The number of green threads.
-  #[structopt(
-    name = "nthreads",
-    short = "n",
-    long = "nthreads",
-    default_value = "5"
-  )]
-  nthreads: u64,
+    /// Which module will be called.
+    #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "fastqc", "all"], default_value="all")]
+    which: String,
 
-  /// Output file.
-  #[structopt(name = "output", short = "o", long = "output", default_value = "")]
-  output: String,
+    /// The number of green threads.
+    #[structopt(name = "nthreads", short = "n", long = "nthreads", default_value = "5")]
+    nthreads: u64,
 
-  /// [OSS File] Which region?
-  #[structopt(name="region", long="region", possible_values=&["cn-shanghai"], default_value="cn-shanghai")]
-  region: String,
-
-  /// [OSS File] Use internal network to get remote file.
-  #[structopt(short = "i", long = "internal")]
-  internal: bool,
-
-  /// [OSS File] Chunk size (Bytes).
-  #[structopt(
-    name = "chunksize",
-    short = "c",
-    long = "chunksize",
-    default_value = "8388608"
-  )]
-  chunk_size: u64,
+    /// Output file.
+    #[structopt(name = "output", short = "o", long = "output", default_value = "")]
+    output: String,
 }
 
-pub async fn run(args: &Arguments) {
-  let md5sum: qc::hasher::Meta;
-  let output = if util::is_remote_file(&args.input) {
-    md5sum = qc::hasher::checksum_remote(
-      &args.input,
-      &args.algorithm,
-      &args.region,
-      args.internal,
-      args.nthreads,
-      args.chunk_size,
-    )
-    .await;
-    format!("{}", serde_json::to_string(&md5sum).unwrap())
-  } else {
-    if Path::new(&args.input).exists() {
-      // pattern file must exists when qc mode.
-      if args.which != "checksum" && args.pattern_file.len() == 0 {
-        error!("You need to specified --pattern-file argument.");
-        std::process::exit(1);
-      }
-
-      // TODO: Multi threads?
-      if args.which == "checksum" {
-        eprintln!("Run checksum...");
-        let md5sum = qc::hasher::checksum(&args.input, &args.algorithm);
-        format!("{}", serde_json::to_string(&md5sum).unwrap())
-      } else if args.which == "fastqc" {
-        eprintln!("Run fastqc...");
-        let qc = qc::QCResults::run_fastqc(&args.input, &args.pattern_file, args.nthreads as usize);
-        format!("{}", serde_json::to_string(&qc).unwrap())
-      } else {
-        eprintln!("Run checksum and fastqc...");
-        let mut qc_results = qc::QCResults::run_fastqc(&args.input, &args.pattern_file, args.nthreads as usize);
-        qc_results.set_filemeta(Some(qc::hasher::checksum(&args.input, &args.algorithm)));
-        format!("{}", serde_json::to_string(&qc_results).unwrap())
-      }
+pub fn run(
+    input: String,
+    pattern_file: String,
+    algorithm: String,
+    nthreads: u64,
+    which: String,
+) -> String {
+    let output = if Path::new(&input[..]).exists() {
+        // TODO: Multi threads?
+        if which == "checksum" {
+            eprintln!("Run checksum on {}...", &input[..]);
+            let md5sum = qc::hasher::checksum(&input[..], &algorithm[..]);
+            format!("{}", serde_json::to_string(&md5sum).unwrap())
+        } else if which == "fastqc" {
+            eprintln!("Run fastqc & NGSCheckMate on {}...", &input[..]);
+            let qc = qc::QCResults::run_fastqc(&input[..], &pattern_file[..], nthreads as usize);
+            format!("{}", serde_json::to_string(&qc).unwrap())
+        } else {
+            eprintln!("Run checksum, fastqc & NGSCheckMate on {}...", &input[..]);
+            let mut qc_results =
+                qc::QCResults::run_fastqc(&input[..], &pattern_file[..], nthreads as usize);
+            qc_results.set_filemeta(Some(qc::hasher::checksum(&input[..], &algorithm[..])));
+            format!("{}", serde_json::to_string(&qc_results).unwrap())
+        }
     } else {
-      error!("{} - Not Found: {:?}", module_path!(), args.input);
-      std::process::exit(1);
-    }
-  };
+        error!("{} - Not Found: {:?}", module_path!(), input);
+        std::process::exit(1);
+    };
 
-  if args.output.len() > 0 {
-    let mut f = File::create(&args.output).unwrap();
-    f.write(output.as_bytes()).unwrap();
-  } else {
-    print!("{}", output);
-  }
+    format!("{}", output)
+}
+
+pub fn batch_run(args: &Arguments) {
+    let mut outputs = vec![];
+    let fastq_r1 = args.fastq_r1.clone();
+    let fastq_r2 = args.fastq_r2.clone();
+    let pattern_file = args.pattern_file.clone();
+    let algorithm = args.algorithm.clone();
+    let nthreads = args.nthreads.clone();
+    let which = args.which.clone();
+    let handler = thread::spawn(move || run(fastq_r1, pattern_file, algorithm, nthreads, which));
+
+    outputs.push(run(
+        fastq_r2,
+        args.pattern_file.clone(),
+        args.algorithm.clone(),
+        args.nthreads.clone(),
+        args.which.clone(),
+    ));
+    outputs.push(handler.join().unwrap());
+
+    let outputs = format!("[{}, {}]", outputs[0], outputs[1]);
+    if args.output.len() > 0 {
+        let mut f = File::create(&args.output).unwrap();
+        f.write(outputs.as_bytes()).unwrap();
+    } else {
+        print!("{}", outputs);
+    }
 }
