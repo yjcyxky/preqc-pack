@@ -40,7 +40,7 @@ pub struct Arguments {
     which: String,
 
     /// The number of green threads.
-    #[structopt(name = "nthreads", short = "n", long = "nthreads", default_value = "5")]
+    #[structopt(name = "nthreads", short = "n", long = "nthreads", default_value = "1")]
     nthreads: u64,
 
     /// Output file.
@@ -48,7 +48,7 @@ pub struct Arguments {
     output: String,
 }
 
-pub fn run(
+pub fn run_par(
     input: String,
     patterns: Arc<Document>,
     count_vec: Arc<Vec<Option<usize>>>,
@@ -65,7 +65,7 @@ pub fn run(
             format!("{}", serde_json::to_string(&md5sum).unwrap())
         } else if which == "fastqc" {
             eprintln!("Run fastqc & NGSCheckMate on {}...", &input[..]);
-            let qc = qc::QCResults::run_fastqc(
+            let qc = qc::QCResults::run_fastqc_par(
                 &input[..],
                 patterns,
                 count_vec,
@@ -75,7 +75,7 @@ pub fn run(
             format!("{}", serde_json::to_string(&qc).unwrap())
         } else {
             eprintln!("Run checksum, fastqc & NGSCheckMate on {}...", &input[..]);
-            let mut qc_results = qc::QCResults::run_fastqc(
+            let mut qc_results = qc::QCResults::run_fastqc_par(
                 &input[..],
                 patterns,
                 count_vec,
@@ -93,7 +93,7 @@ pub fn run(
     format!("{}", output)
 }
 
-pub fn batch_run(args: &Arguments) {
+pub fn batch_run_par(args: &Arguments) {
     let mut outputs = vec![];
     let fastq_r1 = args.fastq_r1.clone();
     let fastq_r2 = args.fastq_r2.clone();
@@ -120,7 +120,7 @@ pub fn batch_run(args: &Arguments) {
     let nthreads = args.nthreads.clone();
     let which = args.which.clone();
     let handler = thread::spawn(move || {
-        run(
+        run_par(
             fastq_r1,
             patterns_arc_1,
             count_vec_arc,
@@ -131,7 +131,7 @@ pub fn batch_run(args: &Arguments) {
         )
     });
 
-    outputs.push(run(
+    outputs.push(run_par(
         fastq_r2,
         patterns_arc.clone(),
         count_vec_arc_1,
@@ -140,6 +140,127 @@ pub fn batch_run(args: &Arguments) {
         args.nthreads.clone(),
         args.which.clone(),
     ));
+    outputs.push(handler.join().unwrap());
+
+    let outputs = format!("[{}, {}]", outputs[0], outputs[1]);
+    if args.output.len() > 0 {
+        let mut f = File::create(&args.output).unwrap();
+        f.write(outputs.as_bytes()).unwrap();
+    } else {
+        print!("{}", outputs);
+    }
+}
+
+pub fn run(
+    input: &str,
+    patterns: &Document,
+    count_vec: &Vec<Option<usize>>,
+    count: usize,
+    algorithm: &str,
+    which: &str,
+) -> String {
+    let output = if Path::new(&input[..]).exists() {
+        // TODO: Multi threads?
+        if which == "checksum" {
+            eprintln!("Run checksum on {}...", &input[..]);
+            let md5sum = qc::hasher::checksum(&input[..], &algorithm[..]);
+            format!("{}", serde_json::to_string(&md5sum).unwrap())
+        } else if which == "fastqc" {
+            eprintln!("Run fastqc & NGSCheckMate on {}...", &input[..]);
+            let qc = qc::QCResults::run_fastqc(input, patterns, count_vec, count);
+            format!("{}", serde_json::to_string(&qc).unwrap())
+        } else {
+            eprintln!("Run checksum, fastqc & NGSCheckMate on {}...", &input[..]);
+            let mut qc_results = qc::QCResults::run_fastqc(input, patterns, count_vec, count);
+            qc_results.set_filemeta(Some(qc::hasher::checksum(&input[..], &algorithm[..])));
+            format!("{}", serde_json::to_string(&qc_results).unwrap())
+        }
+    } else {
+        error!("{} - Not Found: {:?}", module_path!(), input);
+        std::process::exit(1);
+    };
+
+    format!("{}", output)
+}
+
+pub fn batch_run(args: &Arguments) {
+    let (patterns, indexes, count) = if args.pattern_file.len() > 0 {
+        qc::mislabeling::VAFMatrix::read_patterns(&args.pattern_file[..])
+    } else {
+        qc::mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
+    };
+
+    let mut count_vec: Vec<Option<usize>> = vec![None; count];
+    for i in indexes {
+        count_vec[i] = Some(0);
+    }
+
+    let fastq_r1 = run(
+        &args.fastq_r1[..],
+        &patterns,
+        &count_vec,
+        count,
+        &args.algorithm[..],
+        &args.which[..],
+    );
+
+    let fastq_r2 = run(
+        &args.fastq_r2[..],
+        &patterns,
+        &count_vec,
+        count,
+        &args.algorithm[..],
+        &args.which[..],
+    );
+
+    let outputs = format!("[{}, {}]", fastq_r1, fastq_r2);
+    if args.output.len() > 0 {
+        let mut f = File::create(&args.output).unwrap();
+        f.write(outputs.as_bytes()).unwrap();
+    } else {
+        print!("{}", outputs);
+    }
+}
+
+pub fn batch_run_thread(args: &Arguments) {
+    let mut outputs = vec![];
+    let (patterns, indexes, count) = if args.pattern_file.len() > 0 {
+        qc::mislabeling::VAFMatrix::read_patterns(&args.pattern_file[..])
+    } else {
+        qc::mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
+    };
+
+    let mut count_vec: Vec<Option<usize>> = vec![None; count];
+    for i in indexes {
+        count_vec[i] = Some(0);
+    }
+
+    let patterns_r1 = patterns.clone();
+    let fastq_r1 = args.fastq_r1.clone();
+    let count_vec_r1 = count_vec.clone();
+    let algorithm = args.algorithm.clone();
+    let which = args.which.clone();
+
+    let handler = thread::spawn(move || {
+        return run(
+            &fastq_r1[..],
+            &patterns_r1,
+            &count_vec_r1,
+            count,
+            &algorithm[..],
+            &which[..],
+        );
+    });
+
+    outputs.push(run(
+        &args.fastq_r2[..],
+        &patterns,
+        &count_vec,
+        count,
+        &args.algorithm[..],
+        &args.which[..],
+    ));
+
     outputs.push(handler.join().unwrap());
 
     let outputs = format!("[{}, {}]", outputs[0], outputs[1]);

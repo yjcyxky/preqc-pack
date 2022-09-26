@@ -10,7 +10,7 @@ fn test_process_sequence() {
     for i in indexes {
         count_vec[i] = Some(0);
     }
-    let qc_results = preqc_pack::qc::QCResults::run_fastqc(
+    let qc_results = preqc_pack::qc::QCResults::run_fastqc_par(
         fastq_path,
         Arc::new(patterns),
         Arc::new(count_vec),

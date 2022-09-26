@@ -46,7 +46,7 @@ fn main() {
 
   match opt.cmd {
     SubCommands::Meta(arguments) => {
-      meta::batch_run(&arguments);
+      meta::batch_run_thread(&arguments);
     },
     SubCommands::Merge(arguments) => {
       merge::run(&arguments);
