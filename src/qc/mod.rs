@@ -35,7 +35,7 @@ impl QCResults {
     pub fn run_fastqc(
         fastq_path: &str,
         patterns: Arc<Document>,
-        indexes: Arc<Vec<usize>>,
+        count_vec: Arc<Vec<Option<usize>>>,
         count: usize,
         n_threads: usize,
     ) -> QCResults {
@@ -43,7 +43,7 @@ impl QCResults {
             let result: Result<Vec<_>, Error> =
                 parser.parallel_each(n_threads, move |record_sets| {
                     let mut qc = fastqc::FastQC::new();
-                    let mut vaf_matrix = mislabeling::VAFMatrix::new(&indexes, count);
+                    let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
                     for record_set in record_sets {
                         for record in record_set.iter() {
                             qc.process_sequence(&record.to_owned_record());

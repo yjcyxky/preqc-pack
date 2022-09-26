@@ -51,7 +51,7 @@ pub struct Arguments {
 pub fn run(
     input: String,
     patterns: Arc<Document>,
-    indexes: Arc<Vec<usize>>,
+    count_vec: Arc<Vec<Option<usize>>>,
     count: usize,
     algorithm: String,
     nthreads: u64,
@@ -65,13 +65,23 @@ pub fn run(
             format!("{}", serde_json::to_string(&md5sum).unwrap())
         } else if which == "fastqc" {
             eprintln!("Run fastqc & NGSCheckMate on {}...", &input[..]);
-            let qc =
-                qc::QCResults::run_fastqc(&input[..], patterns, indexes, count, nthreads as usize);
+            let qc = qc::QCResults::run_fastqc(
+                &input[..],
+                patterns,
+                count_vec,
+                count,
+                nthreads as usize,
+            );
             format!("{}", serde_json::to_string(&qc).unwrap())
         } else {
             eprintln!("Run checksum, fastqc & NGSCheckMate on {}...", &input[..]);
-            let mut qc_results =
-                qc::QCResults::run_fastqc(&input[..], patterns, indexes, count, nthreads as usize);
+            let mut qc_results = qc::QCResults::run_fastqc(
+                &input[..],
+                patterns,
+                count_vec,
+                count,
+                nthreads as usize,
+            );
             qc_results.set_filemeta(Some(qc::hasher::checksum(&input[..], &algorithm[..])));
             format!("{}", serde_json::to_string(&qc_results).unwrap())
         }
@@ -95,11 +105,16 @@ pub fn batch_run(args: &Arguments) {
         qc::mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
     };
 
+    let mut count_vec: Vec<Option<usize>> = vec![None; count];
+    for i in indexes {
+        count_vec[i] = Some(0);
+    }
+
     let patterns_arc = Arc::new(patterns);
-    let indexes_arc = Arc::new(indexes);
+    let count_vec_arc = Arc::new(count_vec);
 
     let patterns_arc_1 = patterns_arc.clone();
-    let indexes_arc_1 = indexes_arc.clone();
+    let count_vec_arc_1 = count_vec_arc.clone();
 
     let algorithm = args.algorithm.clone();
     let nthreads = args.nthreads.clone();
@@ -108,7 +123,7 @@ pub fn batch_run(args: &Arguments) {
         run(
             fastq_r1,
             patterns_arc_1,
-            indexes_arc_1,
+            count_vec_arc,
             count,
             algorithm,
             nthreads,
@@ -119,7 +134,7 @@ pub fn batch_run(args: &Arguments) {
     outputs.push(run(
         fastq_r2,
         patterns_arc.clone(),
-        indexes_arc.clone(),
+        count_vec_arc_1,
         count,
         args.algorithm.clone(),
         args.nthreads.clone(),
