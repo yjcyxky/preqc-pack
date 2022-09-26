@@ -1,10 +1,14 @@
+use bson::Document;
 use log::*;
-use preqc_pack::{qc, util};
+use preqc_pack::qc;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 use std::thread;
 use structopt::StructOpt;
+
+const PATTERN_FILE: &[u8] = include_bytes!("../../../data/patterns.bson");
 
 /// A collection of metadata, such as file size, md5sum
 #[derive(StructOpt, PartialEq, Debug)]
@@ -46,7 +50,9 @@ pub struct Arguments {
 
 pub fn run(
     input: String,
-    pattern_file: String,
+    patterns: Arc<Document>,
+    indexes: Arc<Vec<usize>>,
+    count: usize,
     algorithm: String,
     nthreads: u64,
     which: String,
@@ -59,12 +65,13 @@ pub fn run(
             format!("{}", serde_json::to_string(&md5sum).unwrap())
         } else if which == "fastqc" {
             eprintln!("Run fastqc & NGSCheckMate on {}...", &input[..]);
-            let qc = qc::QCResults::run_fastqc(&input[..], &pattern_file[..], nthreads as usize);
+            let qc =
+                qc::QCResults::run_fastqc(&input[..], patterns, indexes, count, nthreads as usize);
             format!("{}", serde_json::to_string(&qc).unwrap())
         } else {
             eprintln!("Run checksum, fastqc & NGSCheckMate on {}...", &input[..]);
             let mut qc_results =
-                qc::QCResults::run_fastqc(&input[..], &pattern_file[..], nthreads as usize);
+                qc::QCResults::run_fastqc(&input[..], patterns, indexes, count, nthreads as usize);
             qc_results.set_filemeta(Some(qc::hasher::checksum(&input[..], &algorithm[..])));
             format!("{}", serde_json::to_string(&qc_results).unwrap())
         }
@@ -81,14 +88,39 @@ pub fn batch_run(args: &Arguments) {
     let fastq_r1 = args.fastq_r1.clone();
     let fastq_r2 = args.fastq_r2.clone();
     let pattern_file = args.pattern_file.clone();
+
+    let (patterns, indexes, count) = if pattern_file.len() > 0 {
+        qc::mislabeling::VAFMatrix::read_patterns(&pattern_file[..])
+    } else {
+        qc::mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
+    };
+
+    let patterns_arc = Arc::new(patterns);
+    let indexes_arc = Arc::new(indexes);
+
+    let patterns_arc_1 = patterns_arc.clone();
+    let indexes_arc_1 = indexes_arc.clone();
+
     let algorithm = args.algorithm.clone();
     let nthreads = args.nthreads.clone();
     let which = args.which.clone();
-    let handler = thread::spawn(move || run(fastq_r1, pattern_file, algorithm, nthreads, which));
+    let handler = thread::spawn(move || {
+        run(
+            fastq_r1,
+            patterns_arc_1,
+            indexes_arc_1,
+            count,
+            algorithm,
+            nthreads,
+            which,
+        )
+    });
 
     outputs.push(run(
         fastq_r2,
-        args.pattern_file.clone(),
+        patterns_arc.clone(),
+        indexes_arc.clone(),
+        count,
         args.algorithm.clone(),
         args.nthreads.clone(),
         args.which.clone(),

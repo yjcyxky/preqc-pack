@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use fastq::parse_path;
 // use serde_json;
+use bson::Document;
 use std::io::Error;
 use std::path::Path;
-
-const PATTERN_FILE: &[u8] = include_bytes!("../../data/patterns.bson");
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QCResults {
@@ -32,13 +32,13 @@ impl QCResults {
         self.filemeta = filemeta;
     }
 
-    pub fn run_fastqc(fastq_path: &str, pattern_path: &str, n_threads: usize) -> QCResults {
-        let (patterns, indexes, count) = if pattern_path.len() > 0 {
-            mislabeling::VAFMatrix::read_patterns(pattern_path)
-        } else {
-            mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
-        };
-
+    pub fn run_fastqc(
+        fastq_path: &str,
+        patterns: Arc<Document>,
+        indexes: Arc<Vec<usize>>,
+        count: usize,
+        n_threads: usize,
+    ) -> QCResults {
         match parse_path(Some(fastq_path), |parser| {
             let result: Result<Vec<_>, Error> =
                 parser.parallel_each(n_threads, move |record_sets| {
