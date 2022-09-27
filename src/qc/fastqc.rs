@@ -627,10 +627,11 @@ impl FastQC {
     }
 
     /// Finish method is crucial, don't forget it.
-    pub fn finish(&mut self) {
+    pub fn finish(&mut self) -> &FastQC {
         self.basic_stats.finish();
         self.per_base_seq_quality
             .get_percentages(self.basic_stats.phred.offset);
+        self
     }
 
     pub fn set_highest_lowest_char(&mut self, qual: &Vec<u8>) {

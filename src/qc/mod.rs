@@ -69,6 +69,7 @@ impl QCResults {
                     }
 
                     let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
+
                     QCResults {
                         filemeta: None,
                         fastqc: merged_qc.update_name(filename),
@@ -99,12 +100,14 @@ impl QCResults {
             parser
                 .each(|record| {
                     qc.process_sequence(&record.to_owned_record());
-                    vaf_matrix.process_sequence(&patterns, &record.to_owned_record());
+                    vaf_matrix.process_sequence_unsafe(&patterns, &record.to_owned_record());
                     return true;
                 })
                 .expect("Invalid fastq file");
 
             let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
+
+            qc.finish();
 
             QCResults {
                 filemeta: None,
