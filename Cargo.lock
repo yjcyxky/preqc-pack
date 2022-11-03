@@ -483,6 +483,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68783febc7782c6c5cb401fbda4de5a9898be1762314da0bb2c10ced61f18b0c"
 
 [[package]]
+name = "libm"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "292a948cd991e376cf75541fe5b97a1081d713c618b4f1b9500f8844e49eb565"
+
+[[package]]
 name = "libz-sys"
 version = "1.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -641,11 +647,22 @@ dependencies = [
  "lazy_static 1.4.0",
  "log",
  "md-5",
+ "probability",
  "regex",
  "serde",
  "serde_json",
  "stderrlog",
  "structopt",
+]
+
+[[package]]
+name = "probability"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52bcca6a0257cb7ea4599f2d3bd8141f63a4becee52230c040a4d815bea66f2a"
+dependencies = [
+ "random",
+ "special",
 ]
 
 [[package]]
@@ -719,6 +736,12 @@ checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom",
 ]
+
+[[package]]
+name = "random"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97d13a3485349981c90c79112a11222c3e6e75de1d52b87a7525b3bf5361420f"
 
 [[package]]
 name = "redox_syscall"
@@ -815,6 +838,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4614a76b2a8be0058caa9dbbaf66d988527d86d003c11a94fbd335d7661edcef"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "special"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f70115e5d5fe08b5f02f7c709c4bf72dc299528bca63e46183e0389a12a0a645"
+dependencies = [
+ "libm",
 ]
 
 [[package]]

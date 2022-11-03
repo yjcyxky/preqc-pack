@@ -3,21 +3,21 @@ use fastq::parse_path;
 use preqc_pack::qc::fastqc::FastQC;
 
 fn test_process_sequence() {
-  let fastq_path = "examples/test.fastq.gz";
-  let mut qc = FastQC::new();
-  parse_path(Some(fastq_path), |parser| {
-    parser
-      .each(|record| {
-        qc.process_sequence(&record.to_owned_record());
-        return true;
-      })
-      .unwrap()
-  })
-  .unwrap();
+    let fastq_path = "examples/test.fastq.gz";
+    let mut qc = FastQC::new();
+    parse_path(Some(fastq_path), |parser| {
+        parser
+            .each(|record| {
+                qc.process_sequence(&record.to_owned_record());
+                return true;
+            })
+            .unwrap()
+    })
+    .unwrap();
 
-  println!("{:?}", qc);
+    println!("{:?}", qc);
 }
 
 fn main() {
-  test_process_sequence();
+    test_process_sequence();
 }
