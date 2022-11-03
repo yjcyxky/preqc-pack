@@ -1,7 +1,6 @@
 use fastq::{OwnedRecord, Record};
 use serde::{Deserialize, Serialize};
-use stderrlog::new;
-use std::{collections::HashMap, vec, sync::PoisonError, f32::consts::{PI, E}, str::from_utf8, hash::Hash};
+use std::{collections::HashMap, vec, f32::consts::{PI, E}, str::from_utf8};
 
 const SANGER_ENCODING_OFFSET: usize = 32;
 const ILLUMINA_1_3_ENCODING_OFFSET: usize = 64;
@@ -2442,7 +2441,7 @@ impl FastQC {
     }
 
     /// Finish method is crucial, don't forget it.
-    pub fn finish(&mut self) {
+    pub fn finish(&mut self) -> &FastQC {
         self.basic_stats.finish();
         self.per_base_seq_quality
             .get_percentages(self.basic_stats.phred.offset);

@@ -6,10 +6,14 @@ fn test_process_sequence() {
     let pattern_file = "../data/patterns.bson";
     let (patterns, indexes, count) =
         preqc_pack::qc::mislabeling::VAFMatrix::read_patterns(pattern_file);
-    let qc_results = preqc_pack::qc::QCResults::run_fastqc(
+    let mut count_vec: Vec<Option<usize>> = vec![None; count];
+    for i in indexes {
+        count_vec[i] = Some(0);
+    }
+    let qc_results = preqc_pack::qc::QCResults::run_fastqc_par(
         fastq_path,
         Arc::new(patterns),
-        Arc::new(indexes),
+        Arc::new(count_vec),
         count,
         1,
     );
