@@ -32,10 +32,10 @@ impl QCResults {
         self.filemeta = filemeta;
     }
 
-    pub fn run_fastqc(
+    pub fn run_fastqc_par(
         fastq_path: &str,
         patterns: Arc<Document>,
-        indexes: Arc<Vec<usize>>,
+        count_vec: Arc<Vec<Option<usize>>>,
         count: usize,
         n_threads: usize,
     ) -> QCResults {
@@ -43,7 +43,7 @@ impl QCResults {
             let result: Result<Vec<_>, Error> =
                 parser.parallel_each(n_threads, move |record_sets| {
                     let mut qc = fastqc::FastQC::new();
-                    let mut vaf_matrix = mislabeling::VAFMatrix::new(&indexes, count);
+                    let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
                     for record_set in record_sets {
                         for record in record_set.iter() {
                             qc.process_sequence(&record.to_owned_record());
@@ -69,6 +69,7 @@ impl QCResults {
                     }
 
                     let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
+
                     QCResults {
                         filemeta: None,
                         fastqc: merged_qc.update_name(filename),
@@ -79,6 +80,40 @@ impl QCResults {
                     panic!("Parse fastq file error: {}", msg);
                 }
             };
+        }) {
+            Err(msg) => {
+                panic!("Cannot parse fastq file: {}", msg);
+            }
+            Ok(o) => o,
+        }
+    }
+
+    pub fn run_fastqc(
+        fastq_path: &str,
+        patterns: &Document,
+        count_vec: &Vec<Option<usize>>,
+        count: usize,
+    ) -> QCResults {
+        match parse_path(Some(fastq_path), |parser| {
+            let mut qc = fastqc::FastQC::new();
+            let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
+            parser
+                .each(|record| {
+                    qc.process_sequence(&record.to_owned_record());
+                    vaf_matrix.process_sequence_unsafe(&patterns, &record.to_owned_record());
+                    return true;
+                })
+                .expect("Invalid fastq file");
+
+            let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
+
+            qc.finish();
+
+            QCResults {
+                filemeta: None,
+                fastqc: qc.update_name(filename),
+                vaf_matrix: vaf_matrix,
+            }
         }) {
             Err(msg) => {
                 panic!("Cannot parse fastq file: {}", msg);

@@ -69,17 +69,12 @@ impl VAFMatrix {
         };
     }
 
-    pub fn new(indexes: &Vec<usize>, count: usize) -> VAFMatrix {
-        let mut init_values: Vec<Option<usize>> = vec![None; count];
-        for i in indexes {
-            init_values[*i] = Some(0);
-        }
-
+    pub fn new(count: usize, count_vec: &Vec<Option<usize>>) -> VAFMatrix {
         return VAFMatrix {
             length: count,
             indexes: (0..count).into_iter().collect(),
-            reference: init_values.clone(),
-            alternative: init_values.clone(),
+            reference: count_vec.clone(),
+            alternative: count_vec.clone(),
             seq_alt_hited: vec![],
             seq_ref_hited: vec![],
         };
