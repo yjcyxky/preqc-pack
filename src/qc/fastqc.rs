@@ -16,6 +16,7 @@ const FASTQC_CONFIG_DUP_LENGTH: usize = 0;
 const FASTQC_CONFIG_KMER_SIZE: usize = 0;
 
 const INDICATOR_CONFIG_TILE_IGNORE: usize = 0;
+const INDICATOR_CONFIG_OVERREPESENTED_WARN:f32 = 0.1;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QualityCount {
@@ -1629,7 +1630,22 @@ impl OverRepresentedSeqs {
         // If the duplication module hasn't already done
 		// its calculation it needs to do it now before
 		// we stomp all over the data
-        // self.duplication_module.unwrap().calculate_levels();
+        let mut new_duplication_module = self.duplication_module.clone();
+        let mut new_duplication_obj = *new_duplication_module.unwrap();
+        new_duplication_obj.calculate_levels();
+        self.duplication_module = Some(Box::new(new_duplication_obj));
+
+        for (seq, seq_count) in self.sequences.clone() {
+            let mut percentage:f32 = seq_count as f32 / self.count as f32 * 100.0;
+            if percentage > INDICATOR_CONFIG_OVERREPESENTED_WARN {
+                let os:OverRepresentedSeq = OverRepresentedSeq::new(seq.clone(), seq_count, percentage);
+                self.overrepresented_seqs.push(os);
+            }
+        }
+
+        // sort self.overrepresented_seqs by count in OverRepresentedSeq
+        self.overrepresented_seqs.sort_by(|a, b|b.count.cmp(&a.count));
+        self.sequences.clear();
     }
 
     pub fn process_sequence(&mut self, record: &OwnedRecord) {
@@ -2280,7 +2296,7 @@ impl PerTileQualityScore {
         if self.current_length < qual.len() {
             for (this_tile, quality_count) in self.per_tile_quality_counts.clone() {
                 let mut quality_count_new = quality_count.clone();
-                for i in quality_count.len() .. qual.len() {
+                for _ in quality_count.len() .. qual.len() {
                     quality_count_new.push(QualityCount::new());
                 }
                 self.per_tile_quality_counts.insert(this_tile, quality_count_new);
