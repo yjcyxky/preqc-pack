@@ -46,9 +46,9 @@ impl QCResults {
                     let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
                     for record_set in record_sets {
                         for record in record_set.iter() {
-                            qc.process_sequence(&record.to_owned_record());
+                            qc.process_sequence(&record);
                             vaf_matrix
-                                .process_sequence_unsafe(&patterns, &record.to_owned_record());
+                                .process_sequence_unsafe(&patterns, &record);
                         }
                     }
 
@@ -99,8 +99,8 @@ impl QCResults {
             let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
             parser
                 .each(|record| {
-                    qc.process_sequence(&record.to_owned_record());
-                    vaf_matrix.process_sequence_unsafe(&patterns, &record.to_owned_record());
+                    qc.process_sequence(&record);
+                    vaf_matrix.process_sequence_unsafe(&patterns, &record);
                     return true;
                 })
                 .expect("Invalid fastq file");

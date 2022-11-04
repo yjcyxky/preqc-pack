@@ -441,7 +441,7 @@ impl PerBaseSeqQuality {
         }
     }
 
-    pub fn process_qual(&mut self, qual: &Vec<u8>) {
+    pub fn process_qual(&mut self, qual: &[u8]) {
         let quality_counts_len = self.quality_counts.len();
         let qual_len = qual.len();
         if quality_counts_len < qual_len {
@@ -655,18 +655,18 @@ impl PerSeqQualityScore {
     }
 
     // analysis the average quality scores for a sequence and update the average_score_counts
-    fn process_sequence(&mut self, record: &OwnedRecord) {
+    fn process_sequence(&mut self, record: &impl Record) {
         let mut average_quality = 0;
-        for c in record.qual.clone() {
+        for c in record.qual().clone() {
             let num = c.clone() as usize;
             if num < self.lowest_char {
                 self.lowest_char = num;
             }
-            average_quality += c as usize;
+            average_quality += *c as usize;
         }
 
-        if record.qual.len() > 0 {
-            average_quality = average_quality / record.qual.len();
+        if record.qual().len() > 0 {
+            average_quality = average_quality / record.qual().len();
 
             if self.average_score_counts.contains_key(&average_quality) {
                 let mut current_count = self.average_score_counts[&average_quality];
@@ -793,7 +793,7 @@ impl PerBaseSeqContent {
         self.percentages = vec![t_percent, c_percent, a_percent, g_percent];
     }
 
-    fn process_sequence(&mut self, record: &OwnedRecord) {
+    fn process_sequence(&mut self, record: &impl Record) {
         let seq = record.seq();
         let seq_len = seq.len();
         let g_counts_len = self.g_counts.len();
@@ -982,7 +982,7 @@ impl PerSeqGCContent {
         };
     }
 
-    fn process_sequence(&mut self, record: &OwnedRecord) {
+    fn process_sequence(&mut self, record: &impl Record) {
         let seq = self.truncate_sequence(record);
         let this_seq_length = seq.len();
         if this_seq_length == 0 {
@@ -1020,7 +1020,7 @@ impl PerSeqGCContent {
         }
     }
 
-    fn truncate_sequence<'a>(&'a mut self, record: &'a OwnedRecord) -> &[u8] {
+    fn truncate_sequence<'a>(&'a mut self, record: &'a impl Record) -> &[u8] {
         let _seq = record.seq();
         let seq_len = _seq.len();
         if seq_len > 1000 {
@@ -1150,7 +1150,7 @@ impl PerBaseNContent {
         };
     }
 
-    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &impl Record) {
         let seq = record.seq();
         let seq_len = seq.len();
         let n_counts_len = self.n_counts.len();
@@ -1217,7 +1217,7 @@ impl SeqLenDistribution {
         };
     }
 
-    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &impl Record) {
         let seq_len = record.seq().len();
         if seq_len + 2 > self.len_counts.len() {
             for _ in self.len_counts.len()..seq_len + 2 {
@@ -2035,7 +2035,7 @@ impl AdapterContent {
         };
     }
 
-    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &impl Record) {
         self.total_count += 1;
         // We need to be careful about making sure that a sequence is not only longer
         // than we've seen before, but also that the last position we could find a hit
@@ -2396,7 +2396,7 @@ impl KmerContent {
         self.kmers.clear();
     }
 
-    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &impl Record) {
         /*
          * The processing done by this module is quite intensive so to speed things
          * up we don't look at every sequence.  Instead we take only 2% of the
@@ -2502,7 +2502,7 @@ impl PerTileQualityScore {
         return 0.0;
     }
 
-    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &impl Record) {
         // Check if we can skip counting because the module is being ignored anyway
         if self.total_count == 0 {
             if INDICATOR_CONFIG_TILE_IGNORE > 0 {
@@ -2727,7 +2727,7 @@ impl FastQC {
             .get_percentages(self.basic_stats.phred.offset);
     }
 
-    pub fn set_highest_lowest_char(&mut self, qual: &Vec<u8>) {
+    pub fn set_highest_lowest_char(&mut self, qual: &[u8]) {
         for c in qual {
             let num = c.clone() as usize;
             if self.basic_stats.lowest_char > num {
@@ -2772,7 +2772,7 @@ impl FastQC {
     /// // assert_eq!(qc.basic_stats.n_count, 0);
     /// ```
     ///
-    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &impl Record) {
         let mut seq_len = 0;
         for base in record.seq() {
             let base_char = *base as char;
@@ -2806,26 +2806,26 @@ impl FastQC {
         self.basic_stats.set_min_len(seq_len);
         self.basic_stats.set_max_len(seq_len);
 
-        self.set_highest_lowest_char(&record.qual);
+        self.set_highest_lowest_char(&record.qual());
         self.basic_stats.total_reads += 1;
 
-        self.per_base_seq_quality.process_qual(&record.qual);
+        self.per_base_seq_quality.process_qual(record.qual());
 
-        self.per_seq_quality_score.process_sequence(&record);
+        self.per_seq_quality_score.process_sequence(record);
 
-        self.per_base_seq_content.process_sequence(&record);
+        self.per_base_seq_content.process_sequence(record);
 
-        self.per_seq_gc_content.process_sequence(&record);
+        self.per_seq_gc_content.process_sequence(record);
 
-        self.per_base_n_content.process_sequence(&record);
+        self.per_base_n_content.process_sequence(record);
 
-        self.seq_len_distribution.process_sequence(&record);
+        self.seq_len_distribution.process_sequence(record);
 
-        self.adpater_content.process_sequence(&record);
+        self.adpater_content.process_sequence(record);
 
-        self.kmer_content.process_sequence(&record);
+        self.kmer_content.process_sequence(record);
 
-        self.per_tile_quality_score.process_sequence(&record);
+        self.per_tile_quality_score.process_sequence(record);
     }
 
     /// Merge several FastQC instances.
