@@ -3,6 +3,7 @@ use preqc_pack::qc;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 use structopt::StructOpt;
 
 const PATTERN_FILE: &[u8] = include_bytes!("../../../data/patterns.bson");
@@ -32,9 +33,9 @@ pub struct Arguments {
     #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "fastqc", "all"], default_value="all")]
     which: String,
 
-    // /// The number of green threads.
-    // #[structopt(name = "nthreads", short = "n", long = "nthreads", default_value = "5")]
-    // nthreads: u64,
+    /// The number of green threads.
+    #[structopt(name = "nthreads", short = "n", long = "nthreads", default_value = "1")]
+    nthreads: usize,
 
     /// Output file.
     #[structopt(name = "output", short = "o", long = "output", default_value = "")]
@@ -64,16 +65,33 @@ pub fn run(args: &Arguments) {
             eprintln!("Run checksum...");
             let md5sum = qc::hasher::checksum(&args.input, &args.algorithm);
             format!("{}", serde_json::to_string(&md5sum).unwrap())
-        } else if args.which == "fastqc" {
-            eprintln!("Run fastqc...");
-            let qc =
-                qc::QCResults::run_fastqc(&args.input, &patterns, &count_vec, count);
-            format!("{}", serde_json::to_string(&qc).unwrap())
         } else {
-            eprintln!("Run checksum and fastqc...");
-            let mut qc_results = qc::QCResults::run_fastqc(&args.input, &patterns, &count_vec, count);
-            qc_results.set_filemeta(Some(qc::hasher::checksum(&args.input, &args.algorithm)));
-            format!("{}", serde_json::to_string(&qc_results).unwrap())
+            if args.which == "fastqc" {
+                eprintln!("Run fastqc...");
+            } else {
+                eprintln!("Run checksum and fastqc...");
+            }
+
+            let mut qc = if args.nthreads == 1 {
+                qc::QCResults::run_fastqc(&args.input, &patterns, &count_vec, count)
+            } else {
+                eprintln!("Run with {:?} threads", args.nthreads);
+                let patterns = Arc::new(patterns);
+                let count_vec = Arc::new(count_vec);
+                qc::QCResults::run_fastqc_par(
+                    &args.input,
+                    patterns,
+                    count_vec,
+                    count,
+                    args.nthreads,
+                )
+            };
+            if args.which == "fastqc" {
+                format!("{}", serde_json::to_string(&qc).unwrap())
+            } else {
+                qc.set_filemeta(Some(qc::hasher::checksum(&args.input, &args.algorithm)));
+                format!("{}", serde_json::to_string(&qc).unwrap())
+            }
         }
     } else {
         error!("{} - Not Found: {:?}", module_path!(), args.input);
