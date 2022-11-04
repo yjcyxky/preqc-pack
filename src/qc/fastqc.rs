@@ -1,6 +1,16 @@
 use fastq::{OwnedRecord, Record};
+use probability::prelude::*;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, vec, f32::consts::{PI, E}, str::from_utf8};
+use std::cmp::Ordering;
+use std::io::Read;
+use std::{
+    cmp,
+    collections::HashMap,
+    f32::consts::{E, PI},
+    str::from_utf8,
+    vec,
+};
 
 const SANGER_ENCODING_OFFSET: usize = 32;
 const ILLUMINA_1_3_ENCODING_OFFSET: usize = 64;
@@ -13,8 +23,14 @@ const REVERSE_TYPE: usize = 2;
 
 const FASTQC_CONFIG_DUP_LENGTH: usize = 0;
 const FASTQC_CONFIG_KMER_SIZE: usize = 0;
+const FASTQC_CONFIG_CONTAMINANT_FILE: &str = "";
+const FASTQC_CONFIG_ADAPTER_FILE: &str = "";
 
 const INDICATOR_CONFIG_TILE_IGNORE: usize = 0;
+const INDICATOR_CONFIG_OVERREPESENTED_WARN: f32 = 0.1;
+
+const DEFAULT_FILF_PATH_CONTAMINANT: &str = "data/contaminant_list.txt";
+const DEFAULT_FILF_PATH_ADAPTER: &str = "data/adapter_list.txt";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QualityCount {
@@ -618,12 +634,12 @@ impl BasicStats {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PerSeqQualityScore {
-    average_score_counts : HashMap<usize, usize>,
-    y_category_count : Vec<usize>,
-    x_category_quality : Vec<usize>,
+    average_score_counts: HashMap<usize, usize>,
+    y_category_count: Vec<usize>,
+    x_category_quality: Vec<usize>,
     max_counts: usize,
-    most_frequent_score : usize,
-    lowest_char : usize,
+    most_frequent_score: usize,
+    lowest_char: usize,
 }
 
 impl PerSeqQualityScore {
@@ -643,21 +659,21 @@ impl PerSeqQualityScore {
         let mut average_quality = 0;
         for c in record.qual.clone() {
             let num = c.clone() as usize;
-            if  num < self.lowest_char {
+            if num < self.lowest_char {
                 self.lowest_char = num;
             }
             average_quality += c as usize;
         }
 
         if record.qual.len() > 0 {
-            average_quality = average_quality / record.qual.len() ;
+            average_quality = average_quality / record.qual.len();
 
             if self.average_score_counts.contains_key(&average_quality) {
                 let mut current_count = self.average_score_counts[&average_quality];
                 current_count += 1;
-                self.average_score_counts.insert(average_quality, current_count);
-            }
-            else {
+                self.average_score_counts
+                    .insert(average_quality, current_count);
+            } else {
                 self.average_score_counts.insert(average_quality, 1);
             }
         }
@@ -666,30 +682,31 @@ impl PerSeqQualityScore {
     fn calculate_distribution(&mut self) {
         let encoding = PhredEncoding::get_fastq_encoding_offset(self.lowest_char);
 
-        let mut raw_scores = self.average_score_counts.keys().copied().collect::<Vec<_>>();
+        let mut raw_scores = self
+            .average_score_counts
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         raw_scores.sort();
-        
-        self.y_category_count = vec![0;raw_scores[raw_scores.len()-1]-raw_scores[0]+1];
-        self.x_category_quality = vec![0;self.y_category_count.len()];
+
+        self.y_category_count = vec![0; raw_scores[raw_scores.len() - 1] - raw_scores[0] + 1];
+        self.x_category_quality = vec![0; self.y_category_count.len()];
 
         for i in 0..self.y_category_count.len() {
-            self.x_category_quality[i] = (raw_scores[0]+i)-encoding.offset();
-            if self.average_score_counts.contains_key(&(raw_scores[0]+i)) {
-                self.y_category_count[i] = self.average_score_counts[&(raw_scores[0]+i)];
+            self.x_category_quality[i] = (raw_scores[0] + i) - encoding.offset();
+            if self.average_score_counts.contains_key(&(raw_scores[0] + i)) {
+                self.y_category_count[i] = self.average_score_counts[&(raw_scores[0] + i)];
             }
         }
 
         for i in 0..raw_scores.len() {
-            if self.y_category_count[i] >self.max_counts {
+            if self.y_category_count[i] > self.max_counts {
                 self.max_counts = self.y_category_count[i];
                 self.most_frequent_score = self.x_category_quality[i];
             }
         }
-
-        
     }
 }
-
 
 #[cfg(test)]
 mod per_seq_qua_score_tests {
@@ -698,10 +715,10 @@ mod per_seq_qua_score_tests {
     #[test]
     fn test_phred_encoding() {
         let read1 = OwnedRecord {
-          head: b"some_name".to_vec(),
-          seq: b"GTCGCACTGATCTGGGTTAGGCGCGGAGCCGAGGGTTGCACCATTTTTCATTATTGAATGCCAAGATA".to_vec(),
-          qual: b"IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII".to_vec(),
-          sep: None,
+            head: b"some_name".to_vec(),
+            seq: b"GTCGCACTGATCTGGGTTAGGCGCGGAGCCGAGGGTTGCACCATTTTTCATTATTGAATGCCAAGATA".to_vec(),
+            qual: b"IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII".to_vec(),
+            sep: None,
         };
         let mut tt = PerSeqQualityScore::new();
         tt.process_sequence(&read1);
@@ -709,7 +726,6 @@ mod per_seq_qua_score_tests {
         // assert_eq!(phred.name, "Illumina 1.3".to_string());
         // assert_eq!(phred.offset, 33);
     }
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -731,18 +747,18 @@ impl PerBaseSeqContent {
             t_counts: vec![],
             percentages: vec![],
             x_category: vec![],
-        }
+        };
     }
 
-    fn get_percentages(&mut self, offset: usize) {
+    fn get_percentages(&mut self) {
         let groups: Vec<BaseGroup> = BaseGroup::make_base_groups(self.g_counts.len());
         let length = groups.len();
 
-        let mut g_percent = vec![0.0 ;length];
-        let mut a_percent = vec![0.0;length];
-        let mut t_percent = vec![0.0;length];
-        let mut c_percent = vec![0.0;length];
-        
+        let mut g_percent = vec![0.0; length];
+        let mut a_percent = vec![0.0; length];
+        let mut t_percent = vec![0.0; length];
+        let mut c_percent = vec![0.0; length];
+
         let mut g_count = 0;
         let mut a_count = 0;
         let mut t_count = 0;
@@ -756,7 +772,7 @@ impl PerBaseSeqContent {
             c_count = 0;
             total = 0;
             let current_group = &groups[i];
-            for bp in current_group.lower_count()-1 .. current_group.upper_count() {
+            for bp in current_group.lower_count() - 1..current_group.upper_count() {
                 total += self.g_counts[bp];
                 total += self.c_counts[bp];
                 total += self.a_counts[bp];
@@ -768,14 +784,13 @@ impl PerBaseSeqContent {
                 t_count += self.t_counts[bp];
             }
 
-            g_percent[i] = (g_count as f32/total as f32) * 100 as f32;
-            a_percent[i] = (a_count as f32/total as f32) * 100 as f32;
-            t_percent[i] = (t_count as f32/total as f32) * 100 as f32;
-            c_percent[i] = (c_count as f32/total as f32) * 100 as f32;
+            g_percent[i] = (g_count as f32 / total as f32) * 100 as f32;
+            a_percent[i] = (a_count as f32 / total as f32) * 100 as f32;
+            t_percent[i] = (t_count as f32 / total as f32) * 100 as f32;
+            c_percent[i] = (c_count as f32 / total as f32) * 100 as f32;
         }
-        
-        self.percentages = vec![t_percent, c_percent, a_percent, g_percent];
 
+        self.percentages = vec![t_percent, c_percent, a_percent, g_percent];
     }
 
     fn process_sequence(&mut self, record: &OwnedRecord) {
@@ -783,7 +798,7 @@ impl PerBaseSeqContent {
         let seq_len = seq.len();
         let g_counts_len = self.g_counts.len();
 
-        if g_counts_len <  seq_len {
+        if g_counts_len < seq_len {
             for _ in g_counts_len..seq_len {
                 self.g_counts.push(0);
                 self.a_counts.push(0);
@@ -793,8 +808,8 @@ impl PerBaseSeqContent {
         }
 
         for i in 0..seq_len {
-             let base_char = seq[i] as char;
-             match base_char {
+            let base_char = seq[i] as char;
+            match base_char {
                 // match char::from(base.clone()).to_uppercase().to_string().as_str() {
                 'T' => {
                     self.t_counts[i] += 1;
@@ -817,15 +832,15 @@ impl PerBaseSeqContent {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GCModelValue {
     percentage: usize,
-    increment:f32,
+    increment: f32,
 }
 
 impl GCModelValue {
-    fn new(_percentage:usize,_increment:f32) ->GCModelValue {
+    fn new(_percentage: usize, _increment: f32) -> GCModelValue {
         return GCModelValue {
-            percentage:_percentage,
-            increment:_increment,
-        }
+            percentage: _percentage,
+            increment: _increment,
+        };
     }
 
     pub fn percentage(&self) -> usize {
@@ -840,105 +855,108 @@ impl GCModelValue {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GCModel {
     read_length: usize,
-    models:Vec<Vec<GCModelValue>>,
+    models: Vec<Vec<GCModelValue>>,
 }
 
 impl GCModel {
-    fn new () -> GCModel {
+    fn new() -> GCModel {
         return GCModel {
             read_length: 0,
             models: vec![vec![]],
-        }
+        };
     }
 
-    fn new_by_len(length:usize) ->GCModel {
-        let mut claim_counts =  vec![0;101];
+    fn new_by_len(length: usize) -> GCModel {
+        let mut claim_counts = vec![0; 101];
         let read_length = length;
-        let mut models = vec![vec![];length+1];
+        let mut models = vec![vec![]; length + 1];
 
-        for pos in 0..length+1 {
+        for pos in 0..length + 1 {
             let mut low_count = (pos as f32 - 0.5) as f32;
             let mut high_count = (pos as f32 + 0.5) as f32;
 
             if low_count < 0.0 {
-                low_count = 0.0;   
-            }   
-            if high_count < 0.0 {
-                high_count = 0.0;   
+                low_count = 0.0;
             }
-            if high_count > length as f32{
+            if high_count < 0.0 {
+                high_count = 0.0;
+            }
+            if high_count > length as f32 {
                 high_count = length as f32;
             }
             if low_count > length as f32 {
                 low_count = length as f32;
             }
-            let low_percent = (low_count*100 as f32 /length as f32).round() as usize;
-            let high_percent = (high_count*100 as f32 /length as f32).round() as usize;
-            for p in low_percent..high_percent+1 {
+            let low_percent = (low_count * 100 as f32 / length as f32).round() as usize;
+            let high_percent = (high_count * 100 as f32 / length as f32).round() as usize;
+            for p in low_percent..high_percent + 1 {
                 claim_counts[p] += 1;
             }
         }
 
         // We now do a second pass to make up the model using the weightings
-		// we calculated previously.
+        // we calculated previously.
 
-        for pos in 0..length+1 {
+        for pos in 0..length + 1 {
             let mut low_count = (pos as f32 - 0.5) as f32;
             let mut high_count = (pos as f32 + 0.5) as f32;
             if low_count < 0.0 {
-                low_count = 0.0;   
+                low_count = 0.0;
             }
             if high_count < 0.0 {
-                high_count = 0.0;   
+                high_count = 0.0;
             }
-            if high_count > length as f32{
+            if high_count > length as f32 {
                 high_count = length as f32;
             }
             if low_count > length as f32 {
                 low_count = length as f32;
             }
 
-            let low_percent = (low_count*100 as f32 /length as f32).round() as usize;
-            let high_percent = (high_count*100 as f32 /length as f32).round() as usize;
+            let low_percent = (low_count * 100 as f32 / length as f32).round() as usize;
+            let high_percent = (high_count * 100 as f32 / length as f32).round() as usize;
 
-            let mut model_values:Vec<GCModelValue> = Vec::with_capacity(high_percent-low_percent+1);
-            for p in low_percent..high_percent+1 {
-                model_values.insert(p-low_percent, GCModelValue::new(p
-                    , 1 as f32/claim_counts[p] as f32));
+            let mut model_values: Vec<GCModelValue> =
+                Vec::with_capacity(high_percent - low_percent + 1);
+            for p in low_percent..high_percent + 1 {
+                model_values.insert(
+                    p - low_percent,
+                    GCModelValue::new(p, 1 as f32 / claim_counts[p] as f32),
+                );
             }
             models[pos] = model_values;
         }
-        return GCModel { 
-            read_length: read_length, 
-            models: models, 
-        }
+        return GCModel {
+            read_length: read_length,
+            models: models,
+        };
     }
 
-    pub fn get_model_values(&self, gc_count:usize) -> &Vec<GCModelValue> {
+    pub fn get_model_values(&self, gc_count: usize) -> &Vec<GCModelValue> {
         return self.models.get(gc_count).unwrap();
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NormalDistribution {
-    mean:f32,
-    stdev:f32,
+    mean: f32,
+    stdev: f32,
 }
 
 impl NormalDistribution {
-    pub fn new(_mean:f32, _stdev:f32) -> NormalDistribution {
+    pub fn new(_mean: f32, _stdev: f32) -> NormalDistribution {
         return NormalDistribution {
-            mean:_mean,
-            stdev:_stdev,
-        }
+            mean: _mean,
+            stdev: _stdev,
+        };
     }
 
-    pub fn get_zscore_for_values(&self, value:f32)->f32 {
+    pub fn get_zscore_for_values(&self, value: f32) -> f32 {
         let _stdev = self.stdev;
-        let lhs = 1.0/(2.0*_stdev*_stdev*PI).sqrt();
-        let rhs = E.powf(0.0-(value-self.mean).powf(2.0) / (2.0*_stdev*_stdev));
+        let lhs = 1.0 / (2.0 * _stdev * _stdev * PI).sqrt();
+        let rhs = E.powf(0.0 - (value - self.mean).powf(2.0) / (2.0 * _stdev * _stdev));
 
-        return lhs*rhs;
+        return lhs * rhs;
     }
 }
 
@@ -947,52 +965,54 @@ pub struct PerSeqGCContent {
     x_category: Vec<usize>,
     y_gc_distribution: Vec<f32>,
     y_theo_distribution: Vec<f32>,
-    max:f32,
-    deviation_percent:f32,
-    cached_models:Vec<GCModel>
+    max: f32,
+    deviation_percent: f32,
+    cached_models: Vec<GCModel>,
 }
 
 impl PerSeqGCContent {
     fn new() -> PerSeqGCContent {
-        return PerSeqGCContent { 
+        return PerSeqGCContent {
             max: 0.0,
             deviation_percent: 0.0,
-            x_category: vec![], 
-            y_gc_distribution: vec![0.0;101],
-            y_theo_distribution: vec![0.0;101],
-            cached_models:Vec::with_capacity(200),
-        }
+            x_category: vec![],
+            y_gc_distribution: vec![0.0; 101],
+            y_theo_distribution: vec![0.0; 101],
+            cached_models: Vec::with_capacity(200),
+        };
     }
 
     fn process_sequence(&mut self, record: &OwnedRecord) {
         let seq = self.truncate_sequence(record);
         let this_seq_length = seq.len();
-        if this_seq_length ==0 {
+        if this_seq_length == 0 {
             return;
         }
 
         let mut this_seq_gc_count = 0;
         for i in 0..this_seq_length {
             let base_char = seq[i] as char;
-            if base_char=='G' || base_char=='C' {
+            if base_char == 'G' || base_char == 'C' {
                 this_seq_gc_count += 1;
             }
         }
 
         let cached_models_len = self.cached_models.len();
-        if  cached_models_len <= this_seq_length { 
-            for _ in cached_models_len .. this_seq_length {
+        if cached_models_len <= this_seq_length {
+            for _ in cached_models_len..this_seq_length {
                 self.cached_models.push(GCModel::new());
             }
 
             match self.cached_models.get(this_seq_length) {
                 None => {
-                    self.cached_models.push(GCModel::new_by_len(this_seq_length));
+                    self.cached_models
+                        .push(GCModel::new_by_len(this_seq_length));
                 }
-                _ =>{}
+                _ => {}
             }
 
-            let values:&Vec<GCModelValue> =self.cached_models[this_seq_length].get_model_values(this_seq_gc_count);
+            let values: &Vec<GCModelValue> =
+                self.cached_models[this_seq_length].get_model_values(this_seq_gc_count);
 
             for i in 0..values.len() {
                 self.y_gc_distribution[values[i].percentage()] += values[i].increment();
@@ -1000,14 +1020,13 @@ impl PerSeqGCContent {
         }
     }
 
-    fn truncate_sequence<'a>(&'a mut self, record: &'a OwnedRecord) -> &[u8]{
-        let _seq= record.seq();
+    fn truncate_sequence<'a>(&'a mut self, record: &'a OwnedRecord) -> &[u8] {
+        let _seq = record.seq();
         let seq_len = _seq.len();
         if seq_len > 1000 {
             let length = (seq_len / 1000) * 1000;
             return &_seq[0..length];
-        }
-        else if seq_len > 100 {
+        } else if seq_len > 100 {
             let length = (seq_len / 100) * 100;
             return &_seq[0..length];
         }
@@ -1016,12 +1035,12 @@ impl PerSeqGCContent {
 
     fn calculate_distribution(&mut self) {
         self.max = 0.0;
-        self.x_category = vec![0;self.y_gc_distribution.len()];
-        let mut total_count :f32  =0.0;
+        self.x_category = vec![0; self.y_gc_distribution.len()];
+        let mut total_count: f32 = 0.0;
         // We use the mode to calculate the theoretical distribution
-		// so that we cope better with skewed distributions.
+        // so that we cope better with skewed distributions.
         let mut first_mode = 0;
-        let mut mode_count:f32 = 0.0;
+        let mut mode_count: f32 = 0.0;
 
         for i in 0..self.y_gc_distribution.len() {
             self.x_category[i] = i;
@@ -1037,21 +1056,23 @@ impl PerSeqGCContent {
         }
 
         // The mode might not be a very good measure of the centre
-		// of the distribution either due to duplicated vales or
-		// several very similar values next to each other.  We therefore
-		// average over adjacent points which stay above 95% of the modal
-		// value
+        // of the distribution either due to duplicated vales or
+        // several very similar values next to each other.  We therefore
+        // average over adjacent points which stay above 95% of the modal
+        // value
 
-        let mut mode:f32 =0.0;
+        let mut mode: f32 = 0.0;
         let mut mode_duplicate = 0;
         let mut fell_off_top = true;
 
         for i in first_mode..self.y_gc_distribution.len() {
-            if self.y_gc_distribution[i] > self.y_gc_distribution[first_mode] - (self.y_gc_distribution[first_mode]/10 as f32) {
+            if self.y_gc_distribution[i]
+                > self.y_gc_distribution[first_mode]
+                    - (self.y_gc_distribution[first_mode] / 10 as f32)
+            {
                 mode += i as f32;
                 mode_duplicate += 1;
-            }
-            else {
+            } else {
                 fell_off_top = false;
                 break;
             }
@@ -1060,62 +1081,63 @@ impl PerSeqGCContent {
         let mut fell_off_bottom = true;
 
         for i in (0..first_mode).rev() {
-            if self.y_gc_distribution[i] > self.y_gc_distribution[first_mode] - (self.y_gc_distribution[first_mode]/10 as f32) {
+            if self.y_gc_distribution[i]
+                > self.y_gc_distribution[first_mode]
+                    - (self.y_gc_distribution[first_mode] / 10 as f32)
+            {
                 mode += i as f32;
                 mode_duplicate += 1;
+            } else {
+                fell_off_bottom = false;
+                break;
             }
-            else {
-				fell_off_bottom = false;
-				break;
-			}
         }
 
         if fell_off_bottom || fell_off_top {
-			// If the distribution is so skewed that 95% of the mode
-			// is off the 0-100% scale then we keep the mode as the 
-			// centre of the model
-			mode = first_mode as f32;
-		}
-        else {
+            // If the distribution is so skewed that 95% of the mode
+            // is off the 0-100% scale then we keep the mode as the
+            // centre of the model
+            mode = first_mode as f32;
+        } else {
             mode /= mode_duplicate as f32;
         }
 
         // We can now work out a theoretical distribution
-        let mut stdev:f32 = 0.0;
+        let mut stdev: f32 = 0.0;
 
         for i in 0..self.y_gc_distribution.len() {
-            stdev +=  (i-mode as usize).pow(2) as f32 * self.y_gc_distribution[i] as f32;
+            stdev += (i - mode as usize).pow(2) as f32 * self.y_gc_distribution[i] as f32;
         }
 
-        stdev /= total_count-1.0;
+        stdev /= total_count - 1.0;
         stdev = stdev.sqrt();
 
-        let nd = NormalDistribution::new(mode,stdev);
+        let nd = NormalDistribution::new(mode, stdev);
 
         self.deviation_percent = 0.0;
         for i in 0..self.y_theo_distribution.len() {
-            let probability =nd.get_zscore_for_values(i as f32);
-            self.y_theo_distribution[i] = probability*total_count;
+            let probability = nd.get_zscore_for_values(i as f32);
+            self.y_theo_distribution[i] = probability * total_count;
 
             if self.y_theo_distribution[i] > self.max {
                 self.max = self.y_theo_distribution[i];
             }
 
-            self.deviation_percent += (self.y_theo_distribution[i] - self.y_gc_distribution[i]).abs();
+            self.deviation_percent +=
+                (self.y_theo_distribution[i] - self.y_gc_distribution[i]).abs();
         }
 
         self.deviation_percent /= total_count;
         self.deviation_percent *= 100.0;
     }
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PerBaseNContent {
-    n_counts:Vec<usize>,
-    not_n_counts:Vec<usize>,
-    percentages:Vec<f32>,
-    x_categories:Vec<String>,
+    n_counts: Vec<usize>,
+    not_n_counts: Vec<usize>,
+    percentages: Vec<f32>,
+    x_categories: Vec<String>,
 }
 
 impl PerBaseNContent {
@@ -1125,7 +1147,7 @@ impl PerBaseNContent {
             not_n_counts: vec![],
             percentages: vec![],
             x_categories: vec![],
-        }
+        };
     }
 
     pub fn process_sequence(&mut self, record: &OwnedRecord) {
@@ -1134,7 +1156,7 @@ impl PerBaseNContent {
         let n_counts_len = self.n_counts.len();
         if n_counts_len < seq_len {
             // We need to expand the size of the data structures
-            for _ in n_counts_len .. seq_len {
+            for _ in n_counts_len..seq_len {
                 self.n_counts.push(0);
                 self.not_n_counts.push(0);
             }
@@ -1142,10 +1164,9 @@ impl PerBaseNContent {
 
         for i in 0..seq_len {
             let base_char = seq[i] as char;
-            if base_char =='N' {
+            if base_char == 'N' {
                 self.n_counts[i] += 1;
-            }
-            else {
+            } else {
                 self.not_n_counts[i] += 1;
             }
         }
@@ -1155,11 +1176,11 @@ impl PerBaseNContent {
         let groups: Vec<BaseGroup> = BaseGroup::make_base_groups(self.n_counts.len());
         let groups_len = groups.len();
 
-        self.x_categories = vec!["".to_string();groups_len];
-        self.percentages = vec![0.0;groups_len];
+        self.x_categories = vec!["".to_string(); groups_len];
+        self.percentages = vec![0.0; groups_len];
 
-        let mut total:usize;
-        let mut n_count:usize;
+        let mut total: usize;
+        let mut n_count: usize;
 
         for i in 0..groups_len {
             self.x_categories[i] = groups[i].name();
@@ -1167,26 +1188,23 @@ impl PerBaseNContent {
             n_count = 0;
             total = 0;
 
-            for bp in (groups[i].lower_count()-1)..groups[i].upper_count() {
+            for bp in (groups[i].lower_count() - 1)..groups[i].upper_count() {
                 n_count += self.n_counts[bp];
                 total += self.n_counts[bp];
                 total += self.not_n_counts[bp];
             }
 
-            self.percentages[i] = (n_count as f32)/(total as f32) *100.0;
+            self.percentages[i] = (n_count as f32) / (total as f32) * 100.0;
         }
-
     }
-
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SeqLenDistribution {
-    len_counts:Vec<usize>,
-    graph_counts:Vec<f32>,
+    len_counts: Vec<usize>,
+    graph_counts: Vec<f32>,
     x_categories: Vec<String>,
-    max:usize,
+    max: usize,
 }
 
 impl SeqLenDistribution {
@@ -1195,37 +1213,37 @@ impl SeqLenDistribution {
             len_counts: vec![],
             graph_counts: vec![],
             x_categories: vec![],
-            max:0,
-        }
+            max: 0,
+        };
     }
 
-    pub fn process_sequence(&mut self,  record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &OwnedRecord) {
         let seq_len = record.seq().len();
-        if seq_len+2 > self.len_counts.len() {
-            for _ in self.len_counts.len() .. seq_len+2 {
+        if seq_len + 2 > self.len_counts.len() {
+            for _ in self.len_counts.len()..seq_len + 2 {
                 self.len_counts.push(0);
             }
         }
         self.len_counts[seq_len] += 1;
     }
 
-    fn get_size_distribution(&mut self,min:usize, max:usize) -> Vec<usize> {
+    fn get_size_distribution(&mut self, min: usize, max: usize) -> Vec<usize> {
         // We won't group if they've asked us not to
         // some codes haven't completed
 
         let mut base = 1;
-        while base > (max-min) {
+        while base > (max - min) {
             base /= 10;
         }
 
-        let mut interval:usize = 1;
-        let mut starting:usize;
-        let divisions = vec![1,2,5];
+        let mut interval: usize = 1;
+        let starting: usize;
+        let divisions = vec![1, 2, 5];
 
-        'outer: while true {
-            for d in  0.. divisions.len() {
+        'outer: loop {
+            for d in 0..divisions.len() {
                 let tester = base * divisions[d];
-                if (max-min) / tester <=50 {
+                if (max - min) / tester <= 50 {
                     interval = tester;
                     break 'outer;
                 }
@@ -1233,30 +1251,30 @@ impl SeqLenDistribution {
             base *= 10;
         }
 
-        let basic_division = (min as f32/ interval as f32).round();
+        let basic_division = (min as f32 / interval as f32).round();
         let test_start = basic_division as usize * interval;
         starting = test_start;
 
         return vec![starting, interval];
     }
 
-    fn calculate_distribution (&mut self) {
-        let mut max_len:isize = 0;
-        let mut min_len:isize = -1;
+    fn calculate_distribution(&mut self) {
+        let mut max_len: isize = 0;
+        let mut min_len: isize = -1;
         self.max = 0;
 
         // Find the min and max lengths
         for i in 0..self.len_counts.len() {
             if self.len_counts[i] > 0 {
                 if min_len < 0 {
-                    min_len  = i as isize;
+                    min_len = i as isize;
                 }
                 max_len = i as isize;
             }
         }
 
         // We can get a -1 value for min if there aren't any valid sequences
-		// at all.
+        // at all.
         if min_len < 0 {
             min_len = 0;
         }
@@ -1270,27 +1288,27 @@ impl SeqLenDistribution {
         let start_and_interval = self.get_size_distribution(min_len as usize, max_len as usize);
 
         // Work out how many categories we need
-        let mut categories_counts:usize = 0;
+        let mut categories_counts: usize = 0;
         let mut current_value = start_and_interval[0];
         while current_value <= max_len as usize {
             categories_counts += 1;
             current_value = start_and_interval[1];
         }
 
-        self.graph_counts = vec![0.0;categories_counts];
-        self.x_categories = vec!["".to_string();categories_counts];
+        self.graph_counts = vec![0.0; categories_counts];
+        self.x_categories = vec!["".to_string(); categories_counts];
 
         for i in 0..self.graph_counts.len() {
-            let mut min_val = start_and_interval[0] + (start_and_interval[1]*i);
-            let mut max_val = start_and_interval[0]+ start_and_interval[1]*(i+1) -1;
+            let min_val = start_and_interval[0] + (start_and_interval[1] * i);
+            let mut max_val = start_and_interval[0] + start_and_interval[1] * (i + 1) - 1;
 
             if max_val > max_len as usize {
                 max_val = max_len as usize;
             }
 
-            for bp in min_val..max_val+1 {
+            for bp in min_val..max_val + 1 {
                 if bp < self.len_counts.len() {
-                    self.graph_counts[i] += self.len_counts[bp]  as f32;
+                    self.graph_counts[i] += self.len_counts[bp] as f32;
                 }
             }
 
@@ -1304,40 +1322,36 @@ impl SeqLenDistribution {
                 self.max = self.graph_counts[i] as usize;
             }
         }
-
-
     }
-
-    
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Contaminant {
-    name:String,
-    forward:Vec<u8>,
-    reverse:Vec<u8>,
+    name: String,
+    forward: Vec<u8>,
+    reverse: Vec<u8>,
 }
 
 impl Contaminant {
-    pub fn new( _name:String, _sequence:String) -> Contaminant {
-        let sequence = _sequence.to_uppercase(); 
+    pub fn new(_name: String, _sequence: String) -> Contaminant {
+        let sequence = _sequence.to_uppercase();
         let _forward = _sequence.into_bytes();
-        let mut _reverse:Vec<u8> = vec![0;sequence.len()] ;
+        let mut _reverse: Vec<u8> = vec![0; sequence.len()];
         for i in 0.._forward.len() {
-            let revPos = _reverse.len()-1 - i;
+            let rev_pos = _reverse.len() - 1 - i;
             let base_char = _forward[i] as char;
             match base_char {
                 'G' => {
-                    _reverse[revPos] = 'C' as u8;
+                    _reverse[rev_pos] = 'C' as u8;
                 }
-                'A' =>{
-                    _reverse[revPos] = 'T' as u8;
+                'A' => {
+                    _reverse[rev_pos] = 'T' as u8;
                 }
                 'T' => {
-                    _reverse[revPos] = 'A' as u8;
+                    _reverse[rev_pos] = 'A' as u8;
                 }
-                'C' =>{
-                    _reverse[revPos] = 'G' as u8;
+                'C' => {
+                    _reverse[rev_pos] = 'G' as u8;
                 }
                 _ => {
                     panic!(
@@ -1348,54 +1362,80 @@ impl Contaminant {
             }
         }
         return Contaminant {
-            name:_name,
+            name: _name,
             forward: _forward,
             reverse: _reverse,
-        }
+        };
     }
-    
+
     pub fn name(&self) -> String {
         return self.name.clone();
     }
 
-    pub fn find_match(&self, query:&String) -> Option<ContaminantHit> {
+    pub fn find_match(&self, query: &String) -> Option<ContaminantHit> {
         let query = query.to_uppercase();
         let length = query.len();
 
         // We have a special case for queries between 8 - 20bp where we will allow a hit
-		// if it's an exact substring of this contaminant
-        if length <20 && length > 8  {
+        // if it's an exact substring of this contaminant
+        if length < 20 && length > 8 {
             let forward_string = from_utf8(&self.forward).unwrap();
             let reverse_string = from_utf8(&self.reverse).unwrap();
             if forward_string.contains(&query) {
-                return Some(ContaminantHit::new(self.clone(), FORWARD_TYPE, query.len(), 100));
+                return Some(ContaminantHit::new(
+                    self.clone(),
+                    FORWARD_TYPE,
+                    query.len(),
+                    100,
+                ));
             }
             if reverse_string.contains(&query) {
-                return Some(ContaminantHit::new(self.clone(), REVERSE_TYPE, query.len(), 100));
-            } 
+                return Some(ContaminantHit::new(
+                    self.clone(),
+                    REVERSE_TYPE,
+                    query.len(),
+                    100,
+                ));
+            }
         }
 
-        let mut best_hit_option:Option<ContaminantHit> = None;
+        let mut best_hit_option: Option<ContaminantHit> = None;
 
-        // We're going to allow only one mismatch and will require 
-		// a match of at least 20bp to consider this a match at all
+        // We're going to allow only one mismatch and will require
+        // a match of at least 20bp to consider this a match at all
 
-        for offset in (0-(self.forward.len()-20)) .. (query.len()-20) {
-            let this_hit_option:Option<ContaminantHit> = self.sub_find_match(&self.forward, &query.as_bytes().to_vec(), offset, FORWARD_TYPE );
+        for offset in (0 - (self.forward.len() - 20))..(query.len() - 20) {
+            let this_hit_option: Option<ContaminantHit> = self.sub_find_match(
+                &self.forward,
+                &query.as_bytes().to_vec(),
+                offset,
+                FORWARD_TYPE,
+            );
             if this_hit_option.clone().is_none() {
                 continue;
-            } 
-            if best_hit_option.clone().is_none() || this_hit_option.clone().unwrap().length() > best_hit_option.clone().unwrap().length() {
+            }
+            if best_hit_option.clone().is_none()
+                || this_hit_option.clone().unwrap().length()
+                    > best_hit_option.clone().unwrap().length()
+            {
                 best_hit_option = this_hit_option;
             }
         }
 
-        for offset in (0-(self.forward.len()-20)) .. (query.len()-20) {
-            let this_hit_option:Option<ContaminantHit> = self.sub_find_match(&self.forward, &query.as_bytes().to_vec(), offset, REVERSE_TYPE );
+        for offset in (0 - (self.forward.len() - 20))..(query.len() - 20) {
+            let this_hit_option: Option<ContaminantHit> = self.sub_find_match(
+                &self.forward,
+                &query.as_bytes().to_vec(),
+                offset,
+                REVERSE_TYPE,
+            );
             if this_hit_option.clone().is_none() {
                 continue;
-            } 
-            if best_hit_option.clone().is_none() || this_hit_option.clone().unwrap().length() > best_hit_option.clone().unwrap().length() {
+            }
+            if best_hit_option.clone().is_none()
+                || this_hit_option.clone().unwrap().length()
+                    > best_hit_option.clone().unwrap().length()
+            {
                 best_hit_option = this_hit_option;
             }
         }
@@ -1403,63 +1443,93 @@ impl Contaminant {
         return best_hit_option;
     }
 
-    pub fn sub_find_match(&self, ca:&Vec<u8>, cb:&Vec<u8>, offset:usize, direction: usize) -> Option<ContaminantHit> {
-        let mut best_hit_option:Option<ContaminantHit> = None;
+    pub fn sub_find_match(
+        &self,
+        ca: &Vec<u8>,
+        cb: &Vec<u8>,
+        offset: usize,
+        direction: usize,
+    ) -> Option<ContaminantHit> {
+        let mut best_hit_option: Option<ContaminantHit> = None;
         let mut mismatch_count = 0;
         let mut start = 0;
         let mut end = 0;
 
         for i in 0..ca.len() {
             if i + offset < 0 {
-                start =i+1;
+                start = i + 1;
                 continue;
             }
             if i + offset >= cb.len() {
                 break;
             }
 
-            if ca[i] == cb[i+offset] {
+            if ca[i] == cb[i + offset] {
                 end = i;
-            } 
-            else {
-                mismatch_count +=1 ;
+            } else {
+                mismatch_count += 1;
                 // That's the end of this match, see if it's worth recording
-                if 1+(end-start) > 20 {
-                    let id = (((1+(end-start))-(mismatch_count-1))*100)/(1+(end-start));
+                if 1 + (end - start) > 20 {
+                    let id =
+                        (((1 + (end - start)) - (mismatch_count - 1)) * 100) / (1 + (end - start));
                     match best_hit_option.clone() {
                         None => {
-                            best_hit_option = Some(ContaminantHit::new(self.clone(), direction, 1+(end-start), id));
+                            best_hit_option = Some(ContaminantHit::new(
+                                self.clone(),
+                                direction,
+                                1 + (end - start),
+                                id,
+                            ));
                         }
                         Some(best_hit) => {
-                            if best_hit.length() < 1+(end-start) || best_hit.length()  == 1+(end-start) && best_hit.percent_id()<id {
-                                best_hit_option = Some(ContaminantHit::new(self.clone(), direction, 1+(end-start), id));
+                            if best_hit.length() < 1 + (end - start)
+                                || best_hit.length() == 1 + (end - start)
+                                    && best_hit.percent_id() < id
+                            {
+                                best_hit_option = Some(ContaminantHit::new(
+                                    self.clone(),
+                                    direction,
+                                    1 + (end - start),
+                                    id,
+                                ));
                             }
                         }
                     }
                     start = i + 1;
                     end = i + 1;
-                    mismatch_count = 0 ;
+                    mismatch_count = 0;
                 }
             }
         }
 
         // See if we ended with a match.
-        if 1+(end-start) > 20 {
-            let id = (((1+(end-start))-mismatch_count)*100)/(1+(end-start));
+        if 1 + (end - start) > 20 {
+            let id = (((1 + (end - start)) - mismatch_count) * 100) / (1 + (end - start));
             match best_hit_option.clone() {
                 None => {
-                    best_hit_option = Some(ContaminantHit::new(self.clone(), direction, 1+(end-start), id));
+                    best_hit_option = Some(ContaminantHit::new(
+                        self.clone(),
+                        direction,
+                        1 + (end - start),
+                        id,
+                    ));
                 }
                 Some(best_hit) => {
-                    if best_hit.length() < 1+(end-start) || best_hit.length()  == 1+(end-start) && best_hit.percent_id()<id {
-                        best_hit_option = Some(ContaminantHit::new(self.clone(), direction, 1+(end-start), id));
+                    if best_hit.length() < 1 + (end - start)
+                        || best_hit.length() == 1 + (end - start) && best_hit.percent_id() < id
+                    {
+                        best_hit_option = Some(ContaminantHit::new(
+                            self.clone(),
+                            direction,
+                            1 + (end - start),
+                            id,
+                        ));
                     }
                 }
             }
         }
         return best_hit_option;
     }
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1471,16 +1541,21 @@ pub struct ContaminantHit {
 }
 
 impl ContaminantHit {
-    pub fn new(_contaminant:Contaminant, _direction:usize, _length:usize, _percent_id:usize) -> ContaminantHit {
+    pub fn new(
+        _contaminant: Contaminant,
+        _direction: usize,
+        _length: usize,
+        _percent_id: usize,
+    ) -> ContaminantHit {
         if _direction != FORWARD_TYPE && _direction != REVERSE_TYPE {
             panic!("Direction of hit must be FORWARD or REVERSE");
         }
         return ContaminantHit {
-            contaminant:_contaminant,
-            direction:_direction,
-            length:_length,
-            percent_id:_percent_id,
-        }
+            contaminant: _contaminant,
+            direction: _direction,
+            length: _length,
+            percent_id: _percent_id,
+        };
     }
 
     pub fn contaminant(&self) -> Contaminant {
@@ -1502,40 +1577,64 @@ impl ContaminantHit {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ContaminentFinder {
-    contaminants:Vec<Contaminant>,
+    contaminants: Vec<Contaminant>,
 }
 
 impl ContaminentFinder {
     pub fn new() -> ContaminentFinder {
         return ContaminentFinder {
             contaminants: vec![],
-        }
+        };
     }
 
-    pub fn find_contaminants_hit (&mut self, sequences: String) -> Option<ContaminantHit> {
+    pub fn find_contaminants_hit(&mut self, sequences: String) -> Option<ContaminantHit> {
         if self.contaminants.is_empty() {
             self.make_contaminants_list();
-        } 
+        }
 
-        let mut best_hit:Option<ContaminantHit> = None;
+        let mut best_hit: Option<ContaminantHit> = None;
 
         for c in 0..self.contaminants.len() {
             let this_hit = (self.contaminants[c]).find_match(&sequences);
             if this_hit.clone().is_none() {
                 continue;
             }
-            if best_hit.clone().is_none() 
-                || this_hit.clone().unwrap().length() > this_hit.clone().unwrap().length() 
-                || (this_hit.clone().unwrap().length() == best_hit.clone().unwrap().length() 
-                    && this_hit.clone().unwrap().percent_id() > best_hit.clone().unwrap().percent_id()) {
+            if best_hit.clone().is_none()
+                || this_hit.clone().unwrap().length() > this_hit.clone().unwrap().length()
+                || (this_hit.clone().unwrap().length() == best_hit.clone().unwrap().length()
+                    && this_hit.clone().unwrap().percent_id()
+                        > best_hit.clone().unwrap().percent_id())
+            {
                 best_hit = this_hit;
             }
         }
         return best_hit;
     }
 
-    pub fn make_contaminants_list (&mut self){
-      
+    pub fn make_contaminants_list(&mut self) {
+        let mut file;
+        if FASTQC_CONFIG_CONTAMINANT_FILE != "" {
+            file = std::fs::File::open(FASTQC_CONFIG_CONTAMINANT_FILE).unwrap();
+        } else {
+            file = std::fs::File::open(DEFAULT_FILF_PATH_CONTAMINANT).unwrap();
+        }
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        for s in contents.lines() {
+            if s.starts_with('#') {
+                continue;
+            }
+            if s.trim().len() == 0 {
+                continue;
+            }
+
+            let r = Regex::new("\\t+").unwrap();
+            let sections: Vec<&str> = r.split(s).collect();
+            self.contaminants.push(Contaminant::new(
+                sections[0].trim().to_string(),
+                sections[1].trim().to_string(),
+            ));
+        }
     }
 }
 
@@ -1544,20 +1643,20 @@ pub struct OverRepresentedSeq {
     seq: String,
     count: usize,
     percentage: f32,
-    contaminant_hit: Option<ContaminantHit>
+    contaminant_hit: Option<ContaminantHit>,
 }
 
 impl OverRepresentedSeq {
-    pub fn new(_seq: String, _count:usize, _percentage:f32) -> OverRepresentedSeq {
+    pub fn new(_seq: String, _count: usize, _percentage: f32) -> OverRepresentedSeq {
         return OverRepresentedSeq {
-            seq:_seq.clone(),
-            count:_count,
-            percentage:_percentage,
-            contaminant_hit:ContaminentFinder::new().find_contaminants_hit(_seq),
-        }
+            seq: _seq.clone(),
+            count: _count,
+            percentage: _percentage,
+            contaminant_hit: ContaminentFinder::new().find_contaminants_hit(_seq),
+        };
     }
 
-    pub fn seq(& self) -> String {
+    pub fn seq(&self) -> String {
         return self.seq.clone();
     }
 
@@ -1565,51 +1664,53 @@ impl OverRepresentedSeq {
         return self.count;
     }
 
-    pub fn percentage(&self) -> f32{
+    pub fn percentage(&self) -> f32 {
         return self.percentage;
     }
-
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OverRepresentedSeqs {
-    sequences:HashMap<String, usize>,
-    count:usize,
-    overrepresented_seqs:Vec<OverRepresentedSeq>,
-    frozen:bool,
-    duplication_module:Option<Box<SeqDuplicationLevel>>,
-    OBSERVATION_CUTOFF: usize,
-    unique_seq_count:usize,
-    count_at_unique_limit:usize,
+    sequences: HashMap<String, usize>,
+    count: usize,
+    overrepresented_seqs: Vec<OverRepresentedSeq>,
+    frozen: bool,
+    duplication_module: Option<Box<SeqDuplicationLevel>>,
+    observation_cut_off: usize,
+    unique_seq_count: usize,
+    count_at_unique_limit: usize,
 }
 
 impl OverRepresentedSeqs {
     pub fn new() -> OverRepresentedSeqs {
-        let mut t = OverRepresentedSeqs {
-            sequences:HashMap::new(),
-            count:0,
-            overrepresented_seqs:vec![],
-            frozen:false,
+        let t = OverRepresentedSeqs {
+            sequences: HashMap::new(),
+            count: 0,
+            overrepresented_seqs: vec![],
+            frozen: false,
             duplication_module: None,
-            OBSERVATION_CUTOFF: 100000,
+            observation_cut_off: 100000,
             unique_seq_count: 0,
-            count_at_unique_limit:0,
+            count_at_unique_limit: 0,
         };
 
-        return  OverRepresentedSeqs {
-            duplication_module: Some(Box::new(SeqDuplicationLevel::new(t.clone()))),
-            ..t
+        return OverRepresentedSeqs {
+            sequences: HashMap::new(),
+            count: 0,
+            overrepresented_seqs: vec![],
+            frozen: false,
+            duplication_module: Some(Box::new(SeqDuplicationLevel::new(t))),
+            observation_cut_off: 100000,
+            unique_seq_count: 0,
+            count_at_unique_limit: 0,
         };
-
-
     }
 
-    pub fn duplication_level_module (&mut self) ->Option<Box<SeqDuplicationLevel>>{
+    pub fn duplication_level_module(&mut self) -> Option<Box<SeqDuplicationLevel>> {
         return self.duplication_module.clone();
     }
 
-    pub fn seq(& self) -> HashMap<String, usize> {
+    pub fn seq(&self) -> HashMap<String, usize> {
         return self.sequences.clone();
     }
 
@@ -1626,9 +1727,26 @@ impl OverRepresentedSeqs {
 
     fn get_overrepresented_seq(&mut self) {
         // If the duplication module hasn't already done
-		// its calculation it needs to do it now before
-		// we stomp all over the data
-        // self.duplication_module.unwrap().calculate_levels();
+        // its calculation it needs to do it now before
+        // we stomp all over the data
+        let new_duplication_module = self.duplication_module.clone();
+        let mut new_duplication_obj = *new_duplication_module.unwrap();
+        new_duplication_obj.calculate_levels();
+        self.duplication_module = Some(Box::new(new_duplication_obj));
+
+        for (seq, seq_count) in self.sequences.clone() {
+            let percentage: f32 = seq_count as f32 / self.count as f32 * 100.0;
+            if percentage > INDICATOR_CONFIG_OVERREPESENTED_WARN {
+                let os: OverRepresentedSeq =
+                    OverRepresentedSeq::new(seq.clone(), seq_count, percentage);
+                self.overrepresented_seqs.push(os);
+            }
+        }
+
+        // sort self.overrepresented_seqs by count in OverRepresentedSeq
+        self.overrepresented_seqs
+            .sort_by(|a, b| b.count.cmp(&a.count));
+        self.sequences.clear();
     }
 
     pub fn process_sequence(&mut self, record: &OwnedRecord) {
@@ -1637,72 +1755,79 @@ impl OverRepresentedSeqs {
 
         if FASTQC_CONFIG_DUP_LENGTH != 0 {
             seq = &seq[0..FASTQC_CONFIG_DUP_LENGTH];
-        }
-        else if seq.len() > 75 {
+        } else if seq.len() > 75 {
             seq = &seq[0..50];
         }
 
-        let seq_string:String = from_utf8(seq).unwrap().to_string();
+        let seq_string: String = from_utf8(seq).unwrap().to_string();
         if self.sequences.contains_key(&seq_string) {
-            self.sequences.insert(seq_string.clone(), self.sequences[&seq_string]+1);
-            
+            self.sequences
+                .insert(seq_string.clone(), self.sequences[&seq_string] + 1);
+
             if !self.frozen {
                 self.count_at_unique_limit = self.count;
             }
-        }
-        else {
+        } else {
             if !self.frozen {
                 self.sequences.insert(seq_string.clone(), 1);
                 self.unique_seq_count += 1;
                 self.count_at_unique_limit = self.count;
-                if self.unique_seq_count  == self.OBSERVATION_CUTOFF {
+                if self.unique_seq_count == self.observation_cut_off {
                     self.frozen = true;
                 }
             }
         }
-
-        
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SeqDuplicationLevel {
     overrepresented_module: Box<OverRepresentedSeqs>,
-    dedup_percentages:Vec<f32>,
-    total_percentages:Vec<f32>,
-    max_count:f32,
-    percent_diff_seq:f32,
+    dedup_percentages: Vec<f32>,
+    total_percentages: Vec<f32>,
+    max_count: f32,
+    percent_diff_seq: f32,
+    labels: Vec<String>,
 }
 
 impl SeqDuplicationLevel {
-    pub fn new( _overrepresented_module:OverRepresentedSeqs) -> SeqDuplicationLevel {
+    pub fn new(_overrepresented_module: OverRepresentedSeqs) -> SeqDuplicationLevel {
         return SeqDuplicationLevel {
-            overrepresented_module:Box::new(_overrepresented_module),
-            dedup_percentages:vec![],
-            total_percentages:vec![],
-            max_count:0.0,
-            percent_diff_seq:0.0,
-        }
+            overrepresented_module: Box::new(_overrepresented_module),
+            dedup_percentages: vec![],
+            total_percentages: vec![],
+            max_count: 0.0,
+            percent_diff_seq: 0.0,
+            labels: vec![],
+        };
     }
 
-    fn get_corrected_count(&self, count_at_limit:usize,  total_count:usize, duplicate_level:usize, number_of_observe:usize) -> f32 {
-        if (count_at_limit == total_count) || (total_count - number_of_observe < number_of_observe) {
+    fn get_corrected_count(
+        &mut self,
+        count_at_limit: usize,
+        total_count: usize,
+        duplicate_level: usize,
+        number_of_observe: usize,
+    ) -> f32 {
+        if (count_at_limit == total_count) || (total_count - number_of_observe < number_of_observe)
+        {
             return number_of_observe as f32;
         }
 
-       let mut pnot_see_at_limit:f32 = 1.0;
-       let limit_of_care = 1.0 - (number_of_observe as f32 / (number_of_observe as f32 + 0.01));
+        let mut pnot_see_at_limit: f32 = 1.0;
+        let limit_of_care = 1.0 - (number_of_observe as f32 / (number_of_observe as f32 + 0.01));
 
-       for i in 0..count_at_limit {
-            pnot_see_at_limit *=  ((total_count - i) - duplicate_level) as f32 / (total_count - i) as f32;
+        for i in 0..count_at_limit {
+            pnot_see_at_limit *=
+                ((total_count - i) - duplicate_level) as f32 / (total_count - i) as f32;
 
-            if pnot_see_at_limit <limit_of_care as f32 {
+            if pnot_see_at_limit < limit_of_care as f32 {
                 pnot_see_at_limit = 0.0;
                 break;
             }
         }
 
-        let p_see_at_limit = 1.0 -pnot_see_at_limit;
+        let p_see_at_limit = 1.0 - pnot_see_at_limit;
         let true_count = number_of_observe as f32 / p_see_at_limit;
         return true_count;
     }
@@ -1712,33 +1837,36 @@ impl SeqDuplicationLevel {
             return;
         }
 
-        self.dedup_percentages = vec![0.0;16];
-        self.total_percentages = vec![0.0;16];
+        self.dedup_percentages = vec![0.0; 16];
+        self.total_percentages = vec![0.0; 16];
 
-        let  mut collated_counts:HashMap<usize, usize> = HashMap::new();
+        let mut collated_counts: HashMap<usize, usize> = HashMap::new();
 
         for (_, this_count) in (*self.overrepresented_module).seq() {
             if collated_counts.contains_key(&this_count) {
-                collated_counts.insert(this_count, collated_counts[&this_count]+1);
-            }
-             else {
+                collated_counts.insert(this_count, collated_counts[&this_count] + 1);
+            } else {
                 collated_counts.insert(this_count, 1);
-             }
+            }
         }
 
         // Now we can correct each of these
-        let  mut corrected_counts:HashMap<usize, f32> = HashMap::new();
-        for (dup_level, count ) in collated_counts {
-            corrected_counts.insert(dup_level, self.get_corrected_count(
-                (*self.overrepresented_module).count_at_unique_limit(),
-                (*self.overrepresented_module).count(), 
-                dup_level, 
-                count));
+        let mut corrected_counts: HashMap<usize, f32> = HashMap::new();
+        for (dup_level, count) in collated_counts {
+            corrected_counts.insert(
+                dup_level,
+                self.get_corrected_count(
+                    (*self.overrepresented_module).count_at_unique_limit(),
+                    (*self.overrepresented_module).count(),
+                    dup_level,
+                    count,
+                ),
+            );
         }
 
         // From the corrected counts we can now work out the raw and deduplicated proportions
-        let mut dedup_total:f32 = 0.0;
-        let mut raw_total:f32 = 0.0;
+        let mut dedup_total: f32 = 0.0;
+        let mut raw_total: f32 = 0.0;
 
         for (dup_level, corrected_count) in corrected_counts {
             dedup_total += corrected_count;
@@ -1748,23 +1876,17 @@ impl SeqDuplicationLevel {
 
             if dup_slot > 9999 {
                 dup_slot = 15;
-            }
-			else if dup_slot > 4999{
+            } else if dup_slot > 4999 {
                 dup_slot = 14;
-            } 
-			else if dup_slot > 999 {
+            } else if dup_slot > 999 {
                 dup_slot = 13;
-            }
-			else if dup_slot > 499 {
+            } else if dup_slot > 499 {
                 dup_slot = 12;
-            }
-			else if dup_slot > 99 {
+            } else if dup_slot > 99 {
                 dup_slot = 11;
-            }
-			else if dup_slot > 49 {
+            } else if dup_slot > 49 {
                 dup_slot = 10;
-            }
-			else if dup_slot > 9 {
+            } else if dup_slot > 9 {
                 dup_slot = 9;
             }
 
@@ -1772,125 +1894,173 @@ impl SeqDuplicationLevel {
             self.total_percentages[dup_slot] += corrected_count * dup_level as f32;
         }
 
+        self.labels = vec!["".to_string(); 16];
         for i in 0..self.dedup_percentages.len() {
+            if i < 9 {
+                self.labels[i] = (i + 1).to_string();
+            } else if i == 9 {
+                self.labels[i] = ">10".to_string();
+            } else if i == 10 {
+                self.labels[i] = ">50".to_string();
+            } else if i == 11 {
+                self.labels[i] = ">100".to_string();
+            } else if i == 12 {
+                self.labels[i] = ">500".to_string();
+            } else if i == 13 {
+                self.labels[i] = ">1k".to_string();
+            } else if i == 14 {
+                self.labels[i] = ">5k".to_string();
+            } else if i == 15 {
+                self.labels[i] = ">10k".to_string();
+            }
+
             self.dedup_percentages[i] /= dedup_total;
-            self.total_percentages[i]/= raw_total;
+            self.total_percentages[i] /= raw_total;
             self.dedup_percentages[i] *= 100.0;
             self.total_percentages[i] *= 100.0;
         }
 
-        
-        self.percent_diff_seq = (dedup_total/raw_total)*100.0;
+        self.percent_diff_seq = (dedup_total / raw_total) * 100.0;
         if raw_total == 0.0 as f32 {
             self.percent_diff_seq = 100.0;
         }
     }
 
-    pub fn process_sequence(&mut self, record:&OwnedRecord) {
-        // We don't need to do anything since we use 
-		// the data structure from the overrepresented sequences
-		// module.
+    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+        // We don't need to do anything since we use
+        // the data structure from the overrepresented sequences
+        // module.
     }
-
-    
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Adapter {
-    name:String,
-    sequence:String,
-    positions:Vec<usize>,
+    name: String,
+    sequence: String,
+    positions: Vec<usize>,
 }
 
 impl Adapter {
-    pub fn new(name:String, sequence:String ) ->Adapter { 
+    pub fn new(name: String, sequence: String) -> Adapter {
         return Adapter {
-            name:name,
-            sequence:sequence,
-            positions:vec![0],
+            name: name,
+            sequence: sequence,
+            positions: vec![0],
         };
     }
 
-    pub fn increment_count(&mut self, position:usize) {
+    pub fn increment_count(&mut self, position: usize) {
         self.positions[position] += 1;
     }
 
-    pub fn expand_length_to(&mut self, new_length:usize) {
+    pub fn expand_length_to(&mut self, new_length: usize) {
         let old_len = self.positions.len();
         if new_length > old_len {
-            for i in old_len .. new_length {
-                self.positions.push(self.positions[old_len-1]);
+            for _ in old_len..new_length {
+                self.positions.push(self.positions[old_len - 1]);
             }
         }
     }
 
-    pub fn positions (&mut self)->Vec<usize> {
+    pub fn positions(&mut self) -> Vec<usize> {
         return self.positions.clone();
     }
 
-    pub fn sequence (&mut self)->String {
+    pub fn sequence(&mut self) -> String {
         return self.sequence.clone();
     }
 
-    pub fn name (&mut self)->String {
+    pub fn name(&mut self) -> String {
         return self.name.clone();
     }
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AdapterContent {
     longest_sequence: usize,
-    longest_adpater:usize,
-    total_count:usize,
+    longest_adpater: usize,
+    total_count: usize,
+
     // This is the full set of Kmers to be reported
     adapters: Vec<Adapter>,
 
     // This is the data for the Kmers which are going to be placed on the graph
-    enrichments:Vec<Vec<f32>>,
-    groups:Vec<BaseGroup>,
+    enrichments: Vec<Vec<f32>>,
+    labels: Vec<String>,
+    x_labels: Vec<String>,
+    groups: Vec<BaseGroup>,
 }
 
 impl AdapterContent {
     pub fn new() -> AdapterContent {
-        // read data from the file
+        let mut adapters: Vec<Adapter> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
+
+        let mut file;
+        if FASTQC_CONFIG_CONTAMINANT_FILE != "" {
+            file = std::fs::File::open(FASTQC_CONFIG_ADAPTER_FILE).unwrap();
+        } else {
+            file = std::fs::File::open(DEFAULT_FILF_PATH_ADAPTER).unwrap();
+        }
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+
+        for s in contents.lines() {
+            if s.starts_with('#') {
+                continue;
+            }
+            if s.trim().len() == 0 {
+                continue;
+            }
+
+            let r = Regex::new("\\t+").unwrap();
+            let sections: Vec<&str> = r.split(s).collect();
+            adapters.push(Adapter::new(
+                sections[0].trim().to_string(),
+                sections[1].trim().to_string(),
+            ));
+            labels.push(sections[0].trim().to_string());
+        }
 
         return AdapterContent {
-            longest_sequence:0,
-            longest_adpater:0,
-            total_count:0,
-
-            adapters:vec![],
-
-            enrichments:vec![vec![0.0]],
-            groups:vec![],
+            longest_sequence: 0,
+            longest_adpater: 0,
+            total_count: 0,
+            adapters: adapters,
+            enrichments: vec![vec![0.0]],
+            labels: labels,
+            x_labels: vec![],
+            groups: vec![],
         };
     }
 
-    pub fn process_sequence(&mut self, record:&OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &OwnedRecord) {
         self.total_count += 1;
         // We need to be careful about making sure that a sequence is not only longer
-		// than we've seen before, but also that the last position we could find a hit
-		// is a positive position.
-		
-		// If the sequence is longer than it was then we need to expand the storage in
-		// all of the adapter objects to account for this.
+        // than we've seen before, but also that the last position we could find a hit
+        // is a positive position.
+
+        // If the sequence is longer than it was then we need to expand the storage in
+        // all of the adapter objects to account for this.
 
         let seq_len = record.seq().len();
-        if seq_len > self.longest_sequence  && seq_len> self.longest_adpater {
+        if seq_len > self.longest_sequence && seq_len > self.longest_adpater {
             self.longest_sequence = seq_len;
-            for  a in 0.. self.adapters.len() {
-                self.adapters[a].expand_length_to(self.longest_sequence-self.longest_adpater +1);
+            for a in 0..self.adapters.len() {
+                self.adapters[a].expand_length_to(self.longest_sequence - self.longest_adpater + 1);
             }
         }
 
         // Now we go through all of the Adapters to see where they occur
 
         for a in 0..self.adapters.len() {
-            let index_option = from_utf8(record.seq()).unwrap().find(&self.adapters[a].sequence());
+            let index_option = from_utf8(record.seq())
+                .unwrap()
+                .find(&self.adapters[a].sequence());
             match index_option {
                 Some(index) => {
-                    for i in index .. (self.longest_sequence-self.longest_adpater+1) {
+                    for i in index..(self.longest_sequence - self.longest_adpater + 1) {
                         self.adapters[a].increment_count(i);
                     }
                 }
@@ -1903,25 +2073,34 @@ impl AdapterContent {
     pub fn calculate_enrichment(&mut self) {
         let mut max_len = 0;
         for a in 0..self.adapters.len() {
-            if self.adapters[a].positions().len()> max_len {
+            if self.adapters[a].positions().len() > max_len {
                 max_len = self.adapters[a].positions().len();
             }
         }
 
         // We'll be grouping together positions later so make up the groups now
         self.groups = BaseGroup::make_base_groups(max_len);
-        self.enrichments = vec![vec![0.0;self.groups.len()];self.adapters.len()];
+
+        self.x_labels = vec!["".to_string(); self.groups.len()];
+        for i in 0..self.groups.len() {
+            self.x_labels[i] = self.groups[i].name();
+        }
+
+        self.enrichments = vec![vec![0.0; self.groups.len()]; self.adapters.len()];
 
         for a in 0..self.adapters.len() {
             let positions = self.adapters[a].positions();
 
             for g in 0..self.groups.len() {
-                let mut p = self.groups[g].lower_count()-1;
-                while p <self.groups[g].lower_count() && p < positions.len() {
-                    self.enrichments[a][g] += (positions[p] as f32 * 100.0)  /self.total_count as f32;
+                let mut p = self.groups[g].lower_count() - 1;
+                while p < self.groups[g].lower_count() && p < positions.len() {
+                    self.enrichments[a][g] +=
+                        (positions[p] as f32 * 100.0) / self.total_count as f32;
                     p += 1;
                 }
-                self.enrichments[a][g] /=  (self.groups[g].upper_count() as f32 - self.groups[g].lower_count() as f32) +1.0;
+                self.enrichments[a][g] /= (self.groups[g].upper_count() as f32
+                    - self.groups[g].lower_count() as f32)
+                    + 1.0;
             }
         }
     }
@@ -1930,15 +2109,15 @@ impl AdapterContent {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Kmer {
     sequence: String,
-    count:usize,
+    count: usize,
     lowest_pvalue: f32,
     obs_exp_position: Vec<f32>,
     positions: Vec<usize>,
 }
 
 impl Kmer {
-    pub fn new(sequence: String, position:usize, seq_len:usize) ->Kmer {
-        let mut positions = vec![0;seq_len];
+    pub fn new(sequence: String, position: usize, seq_len: usize) -> Kmer {
+        let mut positions = vec![0; seq_len];
         positions[position] += 1;
 
         return Kmer {
@@ -1946,34 +2125,34 @@ impl Kmer {
             count: 1,
             lowest_pvalue: 0.0,
             obs_exp_position: vec![],
-            positions:positions,
-        }
+            positions: positions,
+        };
     }
 
-    pub fn sequence (&mut self)->String {
+    pub fn sequence(&mut self) -> String {
         return self.sequence.clone();
     }
 
-    pub fn count (&mut self)->usize {
+    pub fn count(&mut self) -> usize {
         return self.count;
     }
-    
-    pub fn positions (&mut self)->Vec<usize> {
+
+    pub fn positions(&mut self) -> Vec<usize> {
         return self.positions.clone();
     }
 
-    pub fn increment_count(&mut self, position:usize) {
+    pub fn increment_count(&mut self, position: usize) {
         self.count += 1;
         if position > self.positions.len() {
-            for i in self.positions.len() .. (position + 1) {
+            for _ in self.positions.len()..(position + 1) {
                 self.positions.push(0);
             }
             self.positions[position] += 1;
         }
     }
 
-    pub fn max_obs_exp (&self) -> f32 {
-        let mut max:f32 = 0.0; 
+    pub fn max_obs_exp(&self) -> f32 {
+        let mut max: f32 = 0.0;
         for i in 0..self.obs_exp_position.len() {
             if self.obs_exp_position[i] > max {
                 max = self.obs_exp_position[i];
@@ -1982,9 +2161,9 @@ impl Kmer {
         return max;
     }
 
-    pub fn max_position (&self) -> usize {
-        let mut max:f32 = 0.0; 
-        let mut position:usize = 0;
+    pub fn max_position(&self) -> usize {
+        let mut max: f32 = 0.0;
+        let mut position: usize = 0;
         for i in 0..self.obs_exp_position.len() {
             if self.obs_exp_position[i] > max {
                 max = self.obs_exp_position[i];
@@ -1993,13 +2172,24 @@ impl Kmer {
         }
 
         if position == 0 {
-            print!("No value > 0 for {}",self.sequence);
+            print!("No value > 0 for {}", self.sequence);
             position = 1;
         }
         return position;
     }
-}
 
+    pub fn set_obs_exp_positions(&mut self, oe_positions: Vec<f32>) {
+        self.obs_exp_position = oe_positions;
+    }
+
+    pub fn set_lowest_pvalue(&mut self, pvalue: f32) {
+        self.lowest_pvalue = pvalue;
+    }
+
+    pub fn obs_exp_position(&self) -> Vec<f32> {
+        return self.obs_exp_position.clone();
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KmerContent {
@@ -2007,8 +2197,8 @@ pub struct KmerContent {
     longest_sequence: usize,
     total_kmer_counts: Vec<Vec<usize>>,
     skip_count: usize,
-    MIN_KMER_SIZE: usize,
-    MAX_KMER_SIZE: usize,
+    min_kmer_size: usize,
+    max_kmer_size: usize,
     // This is the full set of Kmers to be reported
     enriched_kmers: Vec<Kmer>,
     // This is the data for the Kmers which are going to be placed on the graph
@@ -2016,123 +2206,209 @@ pub struct KmerContent {
     // For the graph we also need to know the scale we need to use on the axes.
     min_gragh_value: f32,
     max_gragh_value: f32,
-    
+
+    x_categories: Vec<String>,
+    x_labels: Vec<String>,
     groups: Vec<BaseGroup>,
 }
 
 impl KmerContent {
-    pub fn new () -> KmerContent {
-        let mut MIN_KMER_SIZE = 7;
-        let mut MAX_KMER_SIZE = 7;
+    pub fn new() -> KmerContent {
+        let mut min_kmer_size = 7;
+        let mut max_kmer_size = 7;
         if FASTQC_CONFIG_KMER_SIZE != 0 {
-            MIN_KMER_SIZE = FASTQC_CONFIG_KMER_SIZE;
-            MAX_KMER_SIZE = FASTQC_CONFIG_KMER_SIZE;
+            min_kmer_size = FASTQC_CONFIG_KMER_SIZE;
+            max_kmer_size = FASTQC_CONFIG_KMER_SIZE;
         }
         return KmerContent {
-            kmers:HashMap::new(),
-            longest_sequence:0,
-            total_kmer_counts:vec![vec![0;MAX_KMER_SIZE]],
+            kmers: HashMap::new(),
+            longest_sequence: 0,
+            total_kmer_counts: vec![vec![0; max_kmer_size]],
             skip_count: 0,
-            MAX_KMER_SIZE: MAX_KMER_SIZE,
-            MIN_KMER_SIZE: MIN_KMER_SIZE,
-            enriched_kmers:vec![],
-            enrichments:vec![],
-            min_gragh_value:0.0,
-            max_gragh_value:0.0,
-            groups:vec![],
+            max_kmer_size: max_kmer_size,
+            min_kmer_size: min_kmer_size,
+            enriched_kmers: vec![],
+            enrichments: vec![],
+            min_gragh_value: 0.0,
+            max_gragh_value: 0.0,
+            x_categories: vec![],
+            x_labels: vec![],
+            groups: vec![],
         };
     }
 
-    fn add_kmer_count(&mut self, position:usize, kemer_len:usize, kmer:&String) {
+    fn add_kmer_count(&mut self, position: usize, kemer_len: usize, kmer: &String) {
         let total_kmer_counts_len = self.total_kmer_counts.len();
-        if position >=  total_kmer_counts_len{
-            for i in total_kmer_counts_len .. (position +1) {
-                self.total_kmer_counts.push(vec![0;self.MAX_KMER_SIZE]);
+        if position >= total_kmer_counts_len {
+            for _ in total_kmer_counts_len..(position + 1) {
+                self.total_kmer_counts.push(vec![0; self.max_kmer_size]);
             }
         }
 
         if kmer.contains('N') {
-            return ;
+            return;
         }
 
-        self.total_kmer_counts[position][kemer_len-1] += 1;
+        self.total_kmer_counts[position][kemer_len - 1] += 1;
     }
 
     fn calculate_enrichment(&mut self) {
         /*
-		 * For each Kmer we work out whether there is a statistically
-		 * significant deviation in its coverage at any given position
-		 * compared to its average coverage over all positions.
-		 */
+         * For each Kmer we work out whether there is a statistically
+         * significant deviation in its coverage at any given position
+         * compared to its average coverage over all positions.
+         */
 
-         self.groups = BaseGroup::make_base_groups(self.longest_sequence-self.MIN_KMER_SIZE +1);
+        self.groups = BaseGroup::make_base_groups(self.longest_sequence - self.min_kmer_size + 1);
 
-         let mut uneven_kemers:Vec<Kmer> = vec![];
+        let mut uneven_kemers: Vec<Kmer> = vec![];
 
-         for (_, kmer) in self.kmers.clone() {
+        for (_, kmer) in self.kmers.clone() {
             let mut k = kmer.clone();
-            let mut seq:String = k.sequence();
-            let mut count = k.count();
-            
-            let mut total_kmer_count:usize = 0;
+            let seq: String = k.sequence();
+            let count = k.count();
+
+            let mut total_kmer_count: usize = 0;
             // This gets us the total number of Kmers of this type in the whole
-			// dataset.
+            // dataset.
             for i in 0..self.total_kmer_counts.len() {
-                total_kmer_count += self.total_kmer_counts[i][seq.len()-1];
+                total_kmer_count += self.total_kmer_counts[i][seq.len() - 1];
             }
 
             // This is the expected proportion of all Kmers which have this
-			// specific Kmer sequence.  We no longer make any attempt to judge
-			// overall enrichment or depletion of this sequence since once you
-			// get to longer lengths the distribution isn't flat anyway
+            // specific Kmer sequence.  We no longer make any attempt to judge
+            // overall enrichment or depletion of this sequence since once you
+            // get to longer lengths the distribution isn't flat anyway
 
-            let expected_proportions:f32 = count as f32 / total_kmer_count as f32;
+            let expected_proportions: f32 = count as f32 / total_kmer_count as f32;
 
-            let mut obs_exp_positions:Vec<f32> = vec![0.0;self.groups.len()];
-            let mut binomial_pvalues:Vec<f32> = vec![0.0;self.groups.len()];
-            let mut position_counts = k.positions();
+            let mut obs_exp_positions: Vec<f32> = vec![0.0; self.groups.len()];
+            let mut binomial_pvalues: Vec<f32> = vec![0.0; self.groups.len()];
+            let position_counts = k.positions();
 
             for g in 0..self.groups.len() {
                 // This is a summation of the number of Kmers of this length which
-				// fall into this base group
+                // fall into this base group
                 let mut total_group_count = 0;
 
                 // This is a summation of the number of hit Kmers which fall within
-				// this base group.
+                // this base group.
                 let mut total_group_hits = 0;
 
-                let mut p = self.groups[g].lower_count()-1;
-                while p<self.groups[g].upper_count() && p<position_counts.len() {
-                    total_group_count += self.total_kmer_counts[p][seq.len()-1];
+                let mut p = self.groups[g].lower_count() - 1;
+                while p < self.groups[g].upper_count() && p < position_counts.len() {
+                    total_group_count += self.total_kmer_counts[p][seq.len() - 1];
                     total_group_hits += position_counts[p];
                     p += 1;
                 }
 
-                let mut predicted = expected_proportions * total_group_count as f32;
+                let predicted = expected_proportions * total_group_count as f32;
                 obs_exp_positions[g] = total_group_hits as f32 / predicted;
-                
+
                 // Now we can run a binomial test to see if there is a significant
-				// deviation from what we expect given the number of observations we've
-				// made
+                // deviation from what we expect given the number of observations we've
+                // made
 
+                let bd: Binomial = Binomial::new(total_group_count, expected_proportions as f64);
+                if total_group_hits as f32 > predicted {
+                    binomial_pvalues[g] = (1.0 - bd.distribution(total_group_hits as f64)) as f32
+                        * 4_i32.pow(k.sequence().len() as u32) as f32;
+                } else {
+                    binomial_pvalues[g] = 1.0;
+                }
             }
-         }
 
-    }
+            k.set_obs_exp_positions(obs_exp_positions.clone());
 
-    pub fn process_sequence(&mut self, record:&OwnedRecord) {
-        /*
-		 * The processing done by this module is quite intensive so to speed things
-		 * up we don't look at every sequence.  Instead we take only 2% of the 
-		 * submitted sequences and extrapolate from these to the full set in the file.
-		 */
-        self.skip_count += 1;
-        
-        if self.skip_count % 50 !=0 {
-            return ;
+            // To keep this we need a p-value below 0.01 and an obs/exp above 5 (actual values are log2 transformed)
+            let mut lowest_value: f32 = 1.0;
+
+            for i in 0..binomial_pvalues.len() {
+                if binomial_pvalues[i] < 0.01 && obs_exp_positions[i] > 5.0 {
+                    if binomial_pvalues[i] < lowest_value {
+                        lowest_value = binomial_pvalues[i];
+                    }
+                }
+            }
+
+            if lowest_value < 0.01 {
+                k.set_lowest_pvalue(lowest_value);
+                uneven_kemers.push(k);
+            }
         }
 
-        let mut seq:String;
+        let mut final_kmers = uneven_kemers;
+
+        // We sort by the highest degree of enrichment over the average
+        final_kmers.sort_by(|a, b| {
+            if b.max_obs_exp() < a.max_obs_exp() {
+                Ordering::Less
+            } else if b.max_obs_exp() > a.max_obs_exp() {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        });
+
+        // So we don't end up with stupidly long lists of Kmers in the
+        // report we'll only report the top 20
+        if final_kmers.len() > 20 {
+            let mut short_kmers: Vec<Kmer> = Vec::new();
+            for i in 0..20 {
+                short_kmers[i] = final_kmers[i].clone();
+            }
+            final_kmers = short_kmers;
+        }
+
+        // Now we take the enrichment positions for the top 6 hits and
+        // record these so we can plot them on a line graph
+        self.enrichments = vec![vec![]; cmp::min(6, final_kmers.len())];
+        self.x_labels = vec!["".to_string(); self.enrichments.len()];
+
+        self.x_categories = vec!["".to_string(); self.groups.len()];
+
+        for i in 0..self.x_categories.len() {
+            self.x_categories[i] = self.groups[i].name();
+        }
+
+        for k in 0..self.enrichments.len() {
+            self.enrichments[k] = vec![0.0; self.groups.len()];
+
+            let obs_exp_pos = final_kmers[k].obs_exp_position();
+            for g in 0..self.groups.len() {
+                self.enrichments[k][g] = obs_exp_pos[g];
+                if obs_exp_pos[g] > self.max_gragh_value {
+                    self.max_gragh_value = obs_exp_pos[g];
+                }
+                if obs_exp_pos[g] < self.min_gragh_value {
+                    self.min_gragh_value = obs_exp_pos[g];
+                }
+            }
+
+            self.x_labels[k] = final_kmers[k].sequence();
+        }
+
+        self.min_gragh_value = 0.0;
+        self.enriched_kmers = final_kmers;
+
+        // Delete the initial data structure so we don't suck up more memory
+        // than we have to.
+        self.kmers.clear();
+    }
+
+    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+        /*
+         * The processing done by this module is quite intensive so to speed things
+         * up we don't look at every sequence.  Instead we take only 2% of the
+         * submitted sequences and extrapolate from these to the full set in the file.
+         */
+        self.skip_count += 1;
+
+        if self.skip_count % 50 != 0 {
+            return;
+        }
+
+        let seq: String;
         if record.seq().len() > 500 {
             seq = from_utf8(&record.seq()[0..500]).unwrap().to_string();
         } else {
@@ -2144,15 +2420,19 @@ impl KmerContent {
         }
 
         // Now we go through all of the Kmers to count these
-        for kmer_size in self.MIN_KMER_SIZE .. (self.MAX_KMER_SIZE + 1) {
-            for i in 0.. (seq.len() - kmer_size +1) {
-                let kmer:String = seq[i..(i+kmer_size)].to_string();
+        for kmer_size in self.min_kmer_size..(self.max_kmer_size + 1) {
+            for i in 0..(seq.len() - kmer_size + 1) {
+                let kmer: String = seq[i..(i + kmer_size)].to_string();
 
                 if kmer.len() != kmer_size {
-                    panic!("String length {} wasn't the same as the kmer length {}",kmer.len(), kmer_size);
+                    panic!(
+                        "String length {} wasn't the same as the kmer length {}",
+                        kmer.len(),
+                        kmer_size
+                    );
                 }
                 // Add to the counts before skipping Kmers containing Ns (see
-				// explanation in addKmerCount for the reasoning).
+                // explanation in addKmerCount for the reasoning).
                 self.add_kmer_count(i, kmer_size, &kmer);
 
                 // Skip Kmers containing N
@@ -2161,69 +2441,68 @@ impl KmerContent {
                 // }
 
                 if self.kmers.contains_key(&kmer) {
-                    let mut tt:Kmer = self.kmers[&kmer].clone();
+                    let mut tt: Kmer = self.kmers[&kmer].clone();
                     tt.increment_count(i);
                     self.kmers.insert(kmer, tt);
+                } else {
+                    self.kmers
+                        .insert(kmer.clone(), Kmer::new(kmer, i, seq.len() - kmer_size + 1));
                 }
-                 else {
-                    self.kmers.insert(kmer.clone(),Kmer::new(kmer, i, seq.len()-kmer_size+1));
-                 }
             }
         }
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PerTileQualityScore {
-    per_tile_quality_counts:HashMap<usize, Vec<QualityCount>>,
-    current_length:usize,
-    means:Vec<Vec<f32>>,
-    x_labels:Vec<String>,
-    tiles:Vec<usize>,
-    high:usize,
-    total_count:usize,
-    split_position:isize,
-    max_deviation:f32,
-    ignore_in_report:bool,
+    per_tile_quality_counts: HashMap<usize, Vec<QualityCount>>,
+    current_length: usize,
+    means: Vec<Vec<f32>>,
+    x_labels: Vec<String>,
+    tiles: Vec<usize>,
+    high: usize,
+    total_count: usize,
+    split_position: isize,
+    max_deviation: f32,
+    ignore_in_report: bool,
 }
 
 impl PerTileQualityScore {
-    pub fn new()->PerTileQualityScore {
-        return PerTileQualityScore{
+    pub fn new() -> PerTileQualityScore {
+        return PerTileQualityScore {
             per_tile_quality_counts: HashMap::new(),
-            current_length:0,
-            means:vec![],
-            x_labels:vec![],
-            tiles:vec![],
-            high:0,
-            total_count:0,
-            split_position:-1,
-            max_deviation:0.0,
-            ignore_in_report:false,
-        }
+            current_length: 0,
+            means: vec![],
+            x_labels: vec![],
+            tiles: vec![],
+            high: 0,
+            total_count: 0,
+            split_position: -1,
+            max_deviation: 0.0,
+            ignore_in_report: false,
+        };
     }
 
-    fn get_mean(&self, tile:usize, min_bp:usize, max_bp:usize,offset:usize) -> f32 {
-        let mut count:usize = 0;
-        let mut total:f32 = 0.0;
-        let mut quality_counts:Vec<QualityCount> = self.per_tile_quality_counts[&tile].clone();
+    fn get_mean(&self, tile: usize, min_bp: usize, max_bp: usize, offset: usize) -> f32 {
+        let mut count: usize = 0;
+        let mut total: f32 = 0.0;
+        let quality_counts: Vec<QualityCount> = self.per_tile_quality_counts[&tile].clone();
 
-        for i in min_bp-1 ..max_bp {
+        for i in min_bp - 1..max_bp {
             if quality_counts[i].total_counts() > 0 {
-               count += 1;
+                count += 1;
                 total += quality_counts[i].get_mean(offset);
             }
         }
 
         if count > 0 {
-            return total/ count as f32;
+            return total / count as f32;
         }
 
         return 0.0;
     }
 
-    pub fn process_sequence (&mut self, record:&OwnedRecord){
+    pub fn process_sequence(&mut self, record: &OwnedRecord) {
         // Check if we can skip counting because the module is being ignored anyway
         if self.total_count == 0 {
             if INDICATOR_CONFIG_TILE_IGNORE > 0 {
@@ -2232,43 +2511,42 @@ impl PerTileQualityScore {
         }
 
         // Don't waste time calculating this if we're not going to use it anyway
-		if self.ignore_in_report {
+        if self.ignore_in_report {
             return;
         }
 
-        // Don't bother with sequences with zero length as they don't have any 
-		// quality information anyway.
+        // Don't bother with sequences with zero length as they don't have any
+        // quality information anyway.
         if record.qual().len() == 0 {
-            return ;
+            return;
         }
-        
+
         self.total_count += 1;
-        if self.total_count > 10000 && self.total_count %10 !=0 {
-            return ;
+        if self.total_count > 10000 && self.total_count % 10 != 0 {
+            return;
         }
 
         // First try to split the id by :
-        let mut tile:usize = 0;
-        let mut id_string = from_utf8(record.head()).unwrap().to_string();
-        let mut split_id_array:Vec<&str> = id_string.split(":").collect();
+        let mut tile: usize = 0;
+        let id_string = from_utf8(record.head()).unwrap().to_string();
+        let split_id_array: Vec<&str> = id_string.split(":").collect();
 
         if self.split_position >= 0 {
             if split_id_array.len() <= self.split_position as usize {
                 println!("Can't extract a number - not enough data");
                 self.ignore_in_report = true;
-                return
+                return;
             }
-            tile = split_id_array[self.split_position as usize].parse::<usize>().unwrap();
-        }
-        else if split_id_array.len() >= 5{
+            tile = split_id_array[self.split_position as usize]
+                .parse::<usize>()
+                .unwrap();
+        } else if split_id_array.len() >= 5 {
             self.split_position = 4;
             tile = split_id_array[4].parse::<usize>().unwrap();
-        }
-        else if split_id_array.len() >= 7{
+        } else if split_id_array.len() >= 7 {
             self.split_position = 2;
             tile = split_id_array[2].parse::<usize>().unwrap();
-        }
-        else {
+        } else {
             // We're not going to get a tile out of this
             self.ignore_in_report = true;
             return;
@@ -2279,27 +2557,28 @@ impl PerTileQualityScore {
         if self.current_length < qual.len() {
             for (this_tile, quality_count) in self.per_tile_quality_counts.clone() {
                 let mut quality_count_new = quality_count.clone();
-                for i in quality_count.len() .. qual.len() {
+                for _ in quality_count.len()..qual.len() {
                     quality_count_new.push(QualityCount::new());
                 }
-                self.per_tile_quality_counts.insert(this_tile, quality_count_new);
+                self.per_tile_quality_counts
+                    .insert(this_tile, quality_count_new);
             }
 
             self.current_length = qual.len();
         }
 
-        if !self.per_tile_quality_counts.contains_key(&tile){
+        if !self.per_tile_quality_counts.contains_key(&tile) {
             if self.per_tile_quality_counts.len() > 1000 {
                 println!("Too many tiles (>1000) so giving up trying to do per-tile qualities since we're probably parsing the file wrongly");
                 self.ignore_in_report = true;
                 self.per_tile_quality_counts.clear();
                 return;
             }
-            let quality_count:Vec<QualityCount> =  vec![QualityCount::new();self.current_length];
+            let quality_count: Vec<QualityCount> = vec![QualityCount::new(); self.current_length];
             self.per_tile_quality_counts.insert(tile, quality_count);
         }
 
-        let mut quality_count:Vec<QualityCount>  = self.per_tile_quality_counts[&tile].clone();
+        let mut quality_count: Vec<QualityCount> = self.per_tile_quality_counts[&tile].clone();
 
         for i in 0..qual.len() {
             quality_count[i].add_value(qual[i] as usize);
@@ -2307,25 +2586,23 @@ impl PerTileQualityScore {
 
         // I guess author forgot the steps as follows:
         self.per_tile_quality_counts.insert(tile, quality_count);
-        
     }
 
-    fn calculate_offset(&self)  -> Vec<u8>{
+    fn calculate_offset(&self) -> Vec<u8> {
         // Works out from the set of chars what is the most
-		// likely encoding scale for this file.
-        let mut min_char:u8 = 0;
-        let mut max_char:u8 = 0;
+        // likely encoding scale for this file.
+        let mut min_char: u8 = 0;
+        let mut max_char: u8 = 0;
 
         // Iterate through the tiles to check them all in case
-		// we're dealing with unrepresentative data in the first one.
+        // we're dealing with unrepresentative data in the first one.
 
         for (_, quality_count) in self.per_tile_quality_counts.clone() {
             for q in 0..quality_count.len() {
-                if min_char ==0 {
+                if min_char == 0 {
                     min_char = quality_count[q].get_min_char() as u8;
                     max_char = quality_count[q].get_max_char() as u8;
-                }
-                else {
+                } else {
                     if (quality_count[q].get_min_char() as u8) < min_char {
                         min_char = quality_count[q].get_min_char() as u8;
                     }
@@ -2335,7 +2612,7 @@ impl PerTileQualityScore {
                 }
             }
         }
-        let result:Vec<u8> = vec![min_char, max_char];
+        let result: Vec<u8> = vec![min_char, max_char];
         return result;
     }
 
@@ -2349,21 +2626,25 @@ impl PerTileQualityScore {
 
         let groups = BaseGroup::make_base_groups(self.current_length);
 
-        let mut tile_numbers = self.per_tile_quality_counts.keys().copied().collect::<Vec<_>>();
+        let mut tile_numbers = self
+            .per_tile_quality_counts
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         tile_numbers.sort();
 
-        self.tiles = vec![0;tile_numbers.len()];
+        self.tiles = vec![0; tile_numbers.len()];
 
         for i in 0..tile_numbers.len() {
             self.tiles[i] = tile_numbers[i];
         }
 
-        self.means = vec![vec![0.0;groups.len()];tile_numbers.len()];
-        self.x_labels = vec!["".to_string();groups.len()];
+        self.means = vec![vec![0.0; groups.len()]; tile_numbers.len()];
+        self.x_labels = vec!["".to_string(); groups.len()];
 
         for t in 0..tile_numbers.len() {
             for i in 0..groups.len() {
-                if t==0  {
+                if t == 0 {
                     self.x_labels[i] = groups[i].name();
                 }
 
@@ -2374,12 +2655,12 @@ impl PerTileQualityScore {
         }
 
         // Now we normalise across each column to see if there are any tiles with unusually
-		// high or low quality.
-        let mut max_deviation:f32 = 0.0;
+        // high or low quality.
+        let mut max_deviation: f32 = 0.0;
 
-        let mut average_qualities_per_group:Vec<f32> = vec![0.0;groups.len()];
+        let mut average_qualities_per_group: Vec<f32> = vec![0.0; groups.len()];
 
-        for t in 0.. tile_numbers.len(){
+        for t in 0..tile_numbers.len() {
             for i in 0..groups.len() {
                 average_qualities_per_group[i] += self.means[t][i];
             }
@@ -2391,7 +2672,7 @@ impl PerTileQualityScore {
 
         for i in 0..groups.len() {
             for t in 0..tile_numbers.len() {
-                self.means[t][i] -= average_qualities_per_group [i];
+                self.means[t][i] -= average_qualities_per_group[i];
                 if self.means[t][i].abs() > max_deviation {
                     max_deviation = self.means[t][i].abs();
                 }
@@ -2400,7 +2681,6 @@ impl PerTileQualityScore {
 
         self.max_deviation = max_deviation;
     }
-
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2412,10 +2692,10 @@ pub struct FastQC {
     pub per_seq_gc_content: PerSeqGCContent,
     pub per_base_n_content: PerBaseNContent,
     pub seq_len_distribution: SeqLenDistribution,
-    pub overrepresented_seqs : OverRepresentedSeqs,
+    pub overrepresented_seqs: OverRepresentedSeqs,
     pub kmer_content: KmerContent,
     pub adpater_content: AdapterContent,
-    pub per_tile_quality_score:PerTileQualityScore,
+    pub per_tile_quality_score: PerTileQualityScore,
 }
 
 impl FastQC {
@@ -2431,7 +2711,7 @@ impl FastQC {
             overrepresented_seqs: OverRepresentedSeqs::new(),
             kmer_content: KmerContent::new(),
             adpater_content: AdapterContent::new(),
-            per_tile_quality_score:PerTileQualityScore::new(),
+            per_tile_quality_score: PerTileQualityScore::new(),
         };
     }
 
@@ -2441,11 +2721,10 @@ impl FastQC {
     }
 
     /// Finish method is crucial, don't forget it.
-    pub fn finish(&mut self) -> &FastQC {
+    pub fn finish(&mut self) {
         self.basic_stats.finish();
         self.per_base_seq_quality
             .get_percentages(self.basic_stats.phred.offset);
-            
     }
 
     pub fn set_highest_lowest_char(&mut self, qual: &Vec<u8>) {
@@ -2547,7 +2826,6 @@ impl FastQC {
         self.kmer_content.process_sequence(&record);
 
         self.per_tile_quality_score.process_sequence(&record);
-        
     }
 
     /// Merge several FastQC instances.
