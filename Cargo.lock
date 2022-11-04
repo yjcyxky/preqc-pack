@@ -128,7 +128,7 @@ dependencies = [
 [[package]]
 name = "bwa"
 version = "0.1.1"
-source = "git+https://github.com/10XGenomics/rust-bwa#360ff84cbff8b3673277b4e99c9abd1548a30675"
+source = "git+https://github.com/yjcyxky/rust-bwa?rev=360ff84#360ff84cbff8b3673277b4e99c9abd1548a30675"
 dependencies = [
  "bwa-sys",
  "libc",
@@ -139,7 +139,7 @@ dependencies = [
 [[package]]
 name = "bwa-sys"
 version = "0.1.0"
-source = "git+https://github.com/10XGenomics/rust-bwa#360ff84cbff8b3673277b4e99c9abd1548a30675"
+source = "git+https://github.com/yjcyxky/rust-bwa?rev=360ff84#360ff84cbff8b3673277b4e99c9abd1548a30675"
 dependencies = [
  "cc",
  "libc",

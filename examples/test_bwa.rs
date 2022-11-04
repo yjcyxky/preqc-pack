@@ -1,14 +1,27 @@
 extern crate bwa;
+
 use bwa::BwaAligner;
+use fastq::{parse_path, Record};
+use std::io::Error;
 
 fn main() {
-    let bwa = BwaAligner::from_path(&"/data/preqc-pack/references/fastq_screen/human/genome.fa").unwrap();
-
-    let r1 = b"GATGGCTGCGCAAGGGTTCTTACTGATCGCCACGTTTTTACTGGTGTTAATGGTGCTGGCGCGTCCTTTAGGCAGCGGG";
-    let q1 = b"2222222222222222222222222222222222222222222222222222222222222222222222222222222";
-    let r2 = b"TGCTGCGTAGCAGATCGACCCAGGCATTCCCTAGCGTGCTCATGCTCTGGCTGGTAAACGCACGGATGAGGGCAAAAAT";
-    let q2 = b"2222222222222222222222222222222222222222222222222222222222222222222222222222222";
-
-    let (r1_alns, _r2_alns) = bwa.align_read_pair(b"read_name", r1, q1, r2, q2);
-    println!("r1 mapping -- tid: {}, pos: {}", r1_alns[0].tid(), r1_alns[0].pos());
+    parse_path(Some("/data/preqc-pack/data/anc_R1.fastq.gz"), |parser| {
+        let result: Result<Vec<_>, Error> = parser.parallel_each(3, |record_sets| {
+            let bwa =
+                BwaAligner::from_path(&"/data/preqc-pack/references/fastq_screen/human/genome.fa")
+                    .unwrap();
+            for record_set in record_sets {
+                for r in record_set.iter() {
+                    let name = std::str::from_utf8(r.head()).unwrap();
+                    let (r1_alns, _r2_alns) =
+                        bwa.align_read_pair(r.head(), &r.seq(), &r.qual(), &r.seq(), &r.qual());
+                    for i in r1_alns {
+                        println!("{:?}\t{:?}", name, i.flags());
+                    }
+                }
+            }
+            true
+        });
+    })
+    .expect("Not found the fastq file.");
 }

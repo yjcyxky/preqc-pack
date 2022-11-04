@@ -1,4 +1,4 @@
-use fastq::{OwnedRecord, Record};
+use fastq::{OwnedRecord, Record, RefRecord};
 use serde::{Deserialize, Serialize};
 
 const SANGER_ENCODING_OFFSET: usize = 32;
@@ -416,7 +416,7 @@ impl PerBaseSeqQuality {
         }
     }
 
-    pub fn process_qual(&mut self, qual: &Vec<u8>) {
+    pub fn process_qual(&mut self, qual: &[u8]) {
         let quality_counts_len = self.quality_counts.len();
         let qual_len = qual.len();
         if quality_counts_len < qual_len {
@@ -634,7 +634,7 @@ impl FastQC {
         self
     }
 
-    pub fn set_highest_lowest_char(&mut self, qual: &Vec<u8>) {
+    pub fn set_highest_lowest_char(&mut self, qual: &[u8]) {
         for c in qual {
             let num = c.clone() as usize;
             if self.basic_stats.lowest_char > num {
@@ -679,7 +679,7 @@ impl FastQC {
     /// // assert_eq!(qc.basic_stats.n_count, 0);
     /// ```
     ///
-    pub fn process_sequence(&mut self, record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, record: &RefRecord) {
         let mut seq_len = 0;
         for base in record.seq() {
             let base_char = *base as char;
@@ -713,10 +713,10 @@ impl FastQC {
         self.basic_stats.set_min_len(seq_len);
         self.basic_stats.set_max_len(seq_len);
 
-        self.set_highest_lowest_char(&record.qual);
+        self.set_highest_lowest_char(record.qual());
         self.basic_stats.total_reads += 1;
 
-        self.per_base_seq_quality.process_qual(&record.qual);
+        self.per_base_seq_quality.process_qual(record.qual());
     }
 
     /// Merge several FastQC instances.
