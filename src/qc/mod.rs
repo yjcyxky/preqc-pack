@@ -32,12 +32,13 @@ impl QCResults {
         self.filemeta = filemeta;
     }
 
-    pub fn run_fastqc_par(
+    pub fn run_qc_par(
         fastq_path: &str,
         patterns: Arc<Document>,
         count_vec: Arc<Vec<Option<usize>>>,
         count: usize,
         n_threads: usize,
+        which: Arc<String>,
     ) -> QCResults {
         match parse_path(Some(fastq_path), |parser| {
             let result: Result<Vec<_>, Error> =
@@ -46,9 +47,12 @@ impl QCResults {
                     let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
                     for record_set in record_sets {
                         for record in record_set.iter() {
-                            qc.process_sequence(&record);
-                            vaf_matrix
-                                .process_sequence_unsafe(&patterns, &record);
+                            let which_step = &which[..];
+                            if which_step == "fastqc" || which_step == "all" {
+                                qc.process_sequence(&record);
+                            } else if which_step == "checkmate" || which_step == "all" {
+                                vaf_matrix.process_sequence_unsafe(&patterns, &record);
+                            }
                         }
                     }
 
@@ -88,19 +92,24 @@ impl QCResults {
         }
     }
 
-    pub fn run_fastqc(
+    pub fn run_qc(
         fastq_path: &str,
         patterns: &Document,
         count_vec: &Vec<Option<usize>>,
         count: usize,
+        which: &str,
     ) -> QCResults {
         match parse_path(Some(fastq_path), |parser| {
             let mut qc = fastqc::FastQC::new();
             let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
             parser
                 .each(|record| {
-                    qc.process_sequence(&record);
-                    vaf_matrix.process_sequence_unsafe(&patterns, &record);
+                    if which == "fastqc" || which == "all" {
+                        qc.process_sequence(&record);
+                    } else if which == "checkmate" || which == "all" {
+                        vaf_matrix.process_sequence_unsafe(&patterns, &record);
+                    }
+                    
                     return true;
                 })
                 .expect("Invalid fastq file");

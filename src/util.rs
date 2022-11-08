@@ -5,8 +5,8 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::str;
 
 // These are values of experience.
-const GZIP_COMPRESSION_RATIO: f64 = 5.5;
-const ONE_READS_SIZE: u64 = 400;
+const GZIP_COMPRESSION_RATIO: f64 = 4.15;
+const ONE_READS_SIZE: u64 = 344;
 
 pub fn is_remote_file(remote_path: &str) -> bool {
     let re = Regex::new(r"(oss|s3)://.*$").unwrap();

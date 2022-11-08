@@ -8,7 +8,7 @@ use structopt::StructOpt;
 
 const PATTERN_FILE: &[u8] = include_bytes!("../../../data/patterns.bson");
 
-/// A collection of metadata, such as file size, md5sum
+/// A collection of metadata, such as file size, md5sum, fastqc, ngscheckmate
 #[derive(StructOpt, PartialEq, Debug)]
 #[structopt(setting=structopt::clap::AppSettings::ColoredHelp, name="PreQC Tool Suite - Hasher", author="Jingcheng Yang <yjcyxky@163.com>")]
 pub struct Arguments {
@@ -30,7 +30,7 @@ pub struct Arguments {
     algorithm: String,
 
     /// Which module will be called.
-    #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "fastqc", "all"], default_value="all")]
+    #[structopt(name="which", short="w", long="which", possible_values=&["checksum", "fastqc", "checkmate", "all"], default_value="all")]
     which: String,
 
     /// The number of green threads.
@@ -68,25 +68,30 @@ pub fn run(args: &Arguments) {
         } else {
             if args.which == "fastqc" {
                 eprintln!("Run fastqc...");
+            } else if args.which == "checkmate" {
+                eprintln!("Run checkmate...")
             } else {
-                eprintln!("Run checksum and fastqc...");
+                eprintln!("Run checksum, fastqc and checkmate...");
             }
 
             let mut qc = if args.nthreads == 1 {
-                qc::QCResults::run_fastqc(&args.input, &patterns, &count_vec, count)
+                qc::QCResults::run_qc(&args.input, &patterns, &count_vec, count, &args.which)
             } else {
                 eprintln!("Run with {:?} threads", args.nthreads);
                 let patterns = Arc::new(patterns);
                 let count_vec = Arc::new(count_vec);
-                qc::QCResults::run_fastqc_par(
+                let which = Arc::new(args.which.to_string());
+                qc::QCResults::run_qc_par(
                     &args.input,
                     patterns,
                     count_vec,
                     count,
                     args.nthreads,
+                    which
                 )
             };
-            if args.which == "fastqc" {
+
+            if args.which != "all" {
                 format!("{}", serde_json::to_string(&qc).unwrap())
             } else {
                 qc.set_filemeta(Some(qc::hasher::checksum(&args.input, &args.algorithm)));

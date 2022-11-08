@@ -1,6 +1,6 @@
 use bson::Document;
 use digest::{Digest, Output};
-use fastq::{OwnedRecord, Record, RefRecord};
+use fastq::{Record, RefRecord};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
@@ -214,7 +214,7 @@ impl VAFMatrix {
         self.reset_seq_hited();
     }
 
-    pub fn process_sequence(&mut self, patterns: &Document, fastq_record: &OwnedRecord) {
+    pub fn process_sequence(&mut self, patterns: &Document, fastq_record: &RefRecord) {
         let seq = fastq_record.seq();
         let length = seq.len();
 
