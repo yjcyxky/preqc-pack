@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use structopt::StructOpt;
 
-const PATTERN_FILE: &[u8] = include_bytes!("../../../data/patterns.bson");
+const PATTERN_FILE: &[u8] = include_bytes!("../../../data/patterns.json");
 
 /// A collection of metadata, such as file size, md5sum, fastqc, ngscheckmate
 #[derive(StructOpt, PartialEq, Debug)]

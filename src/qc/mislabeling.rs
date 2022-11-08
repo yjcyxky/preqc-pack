@@ -1,9 +1,17 @@
-use bson::Document;
 use digest::{Digest, Output};
 use fastq::{Record, RefRecord};
 use serde::{Deserialize, Serialize};
+use serde_json;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PatternData {
+    count: usize,
+    data: HashMap<String, [usize; 2]>,
+    indexes: Vec<usize>,
+}
 
 const PATTERN_LENGTH: usize = 21;
 
@@ -40,7 +48,7 @@ impl VAFMatrix {
     /// assert_eq!(&Bson::Array(vec![Bson::Int32(0), Bson::Int32(0)]), patterns.get("TCCTTGTCATATGTTTTTCTG").unwrap());
     /// ```
     ///
-    pub fn read_patterns(pattern_file: &str) -> (Document, Vec<usize>, usize) {
+    pub fn read_patterns(pattern_file: &str) -> (HashMap<String, [usize; 2]>, Vec<usize>, usize) {
         let f = match File::open(pattern_file) {
             Ok(f) => f,
             Err(msg) => panic!("Cannot open {} - {}", pattern_file, msg),
@@ -49,20 +57,11 @@ impl VAFMatrix {
         return VAFMatrix::read_patterns_with_reader(f);
     }
 
-    pub fn read_patterns_with_reader<R: Read>(mut reader: R) -> (Document, Vec<usize>, usize) {
-        return match Document::from_reader(&mut reader) {
-            Ok(fcontent) => {
-                let count = fcontent.get("count").unwrap().as_i32().unwrap();
-                let data = fcontent.get("data").unwrap();
-                let indexes = fcontent.get("indexes").unwrap().as_array().unwrap();
-                let patterns = data.as_document().unwrap();
-                let indexes = indexes
-                    .into_iter()
-                    .map(|i| i.as_i32().unwrap() as usize)
-                    .collect::<Vec<usize>>();
-
-                (patterns.to_owned(), indexes.to_owned(), count as usize)
-            }
+    pub fn read_patterns_with_reader<R: Read>(
+        mut reader: R,
+    ) -> (HashMap<String, [usize; 2]>, Vec<usize>, usize) {
+        return match serde_json::from_reader(&mut reader) {
+            Ok::<PatternData, _>(fcontent) => (fcontent.data, fcontent.indexes, fcontent.count),
             Err(msg) => {
                 panic!("Cannot read pattern file {}", msg)
             }
@@ -105,7 +104,7 @@ impl VAFMatrix {
         }
     }
 
-    pub fn from_pattern_file(pattern_file: &str) -> (VAFMatrix, Document) {
+    pub fn from_pattern_file(pattern_file: &str) -> (VAFMatrix, HashMap<String, [usize; 2]>) {
         let (patterns, indexes, count) = VAFMatrix::read_patterns(pattern_file);
         let mut init_values = vec![None; count];
         for i in indexes {
@@ -153,7 +152,11 @@ impl VAFMatrix {
         format!("{:x}", sh.finalize())
     }
 
-    pub fn process_sequence_unsafe(&mut self, patterns: &Document, fastq_record: &RefRecord) {
+    pub fn process_sequence_unsafe(
+        &mut self,
+        patterns: &HashMap<String, [usize; 2]>,
+        fastq_record: &RefRecord,
+    ) {
         let seq = fastq_record.seq();
         let length = seq.len();
 
@@ -167,9 +170,8 @@ impl VAFMatrix {
                     let s = std::str::from_utf8_unchecked(substr);
                     match patterns.get(s) {
                         Some(matched) => {
-                            let matched_array = matched.as_array().unwrap();
-                            // matched_array: 0 - index; 1 - ref_or_alt;
-                            let index = matched_array[0].as_i32().unwrap() as usize;
+                            // matched: 0 - index; 1 - ref_or_alt;
+                            let index = matched[0];
                             // For Debug
                             // println!(
                             //   "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
@@ -178,7 +180,7 @@ impl VAFMatrix {
                             //   s,
                             //   matched_array[1].as_i32().unwrap()
                             // );
-                            match matched_array[1].as_i32().unwrap() {
+                            match matched[1] {
                                 // 0 = ref, 1 = alt
                                 1 => {
                                     if !self.exists_in_seq_alt_hited(index) {
@@ -214,7 +216,11 @@ impl VAFMatrix {
         self.reset_seq_hited();
     }
 
-    pub fn process_sequence(&mut self, patterns: &Document, fastq_record: &RefRecord) {
+    pub fn process_sequence(
+        &mut self,
+        patterns: &HashMap<String, [usize; 2]>,
+        fastq_record: &RefRecord,
+    ) {
         let seq = fastq_record.seq();
         let length = seq.len();
 
@@ -228,18 +234,17 @@ impl VAFMatrix {
                     }
                     Ok(s) => match patterns.get(s) {
                         Some(matched) => {
-                            let matched_array = matched.as_array().unwrap();
-                            // matched_array: 0 - index; 1 - ref_or_alt;
-                            let index = matched_array[0].as_i32().unwrap() as usize;
+                            // matched: 0 - index; 1 - ref_or_alt;
+                            let index = matched[0];
                             // For Debug
                             // println!(
                             //   "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
                             //   self.hash::<Md5>(seq),
                             //   index,
                             //   s,
-                            //   matched_array[1].as_i32().unwrap()
+                            //   matched[1]
                             // );
-                            match matched_array[1].as_i32().unwrap() {
+                            match matched[1] {
                                 // 0 = ref, 1 = alt
                                 1 => {
                                     if !self.exists_in_seq_alt_hited(index) {

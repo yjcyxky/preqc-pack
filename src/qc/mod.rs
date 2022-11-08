@@ -6,8 +6,7 @@ pub mod util;
 use serde::{Deserialize, Serialize};
 
 use fastq::parse_path;
-// use serde_json;
-use bson::Document;
+use std::collections::HashMap;
 use std::io::Error;
 use std::path::Path;
 use std::sync::Arc;
@@ -34,7 +33,7 @@ impl QCResults {
 
     pub fn run_qc_par(
         fastq_path: &str,
-        patterns: Arc<Document>,
+        patterns: Arc<HashMap<String, [usize; 2]>>,
         count_vec: Arc<Vec<Option<usize>>>,
         count: usize,
         n_threads: usize,
@@ -94,7 +93,7 @@ impl QCResults {
 
     pub fn run_qc(
         fastq_path: &str,
-        patterns: &Document,
+        patterns: &HashMap<String, [usize; 2]>,
         count_vec: &Vec<Option<usize>>,
         count: usize,
         which: &str,
