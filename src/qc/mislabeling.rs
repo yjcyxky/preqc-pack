@@ -2,7 +2,8 @@ use digest::{Digest, Output};
 use fastq::{Record, RefRecord};
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::collections::HashMap;
+use hashbrown::HashMap;
+// use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 
