@@ -50,7 +50,9 @@ impl QCResults {
                             let which_step = &which[..];
                             if which_step == "fastqc" || which_step == "all" {
                                 qc.process_sequence(&record);
-                            } else if which_step == "checkmate" || which_step == "all" {
+                            }
+                            
+                            if which_step == "checkmate" || which_step == "all" {
                                 vaf_matrix.process_sequence_unsafe(&patterns, &record);
                             }
                         }
@@ -73,10 +75,14 @@ impl QCResults {
                     }
 
                     let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
+                    let mut fastqc = merged_qc.update_name(filename);
+                    fastqc.finish();
+
+                    merged_vaf_matrix.finish();
 
                     QCResults {
                         filemeta: None,
-                        fastqc: merged_qc.update_name(filename),
+                        fastqc: fastqc,
                         vaf_matrix: merged_vaf_matrix,
                     }
                 }
@@ -117,6 +123,7 @@ impl QCResults {
             let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
 
             qc.finish();
+            vaf_matrix.finish();
 
             QCResults {
                 filemeta: None,
