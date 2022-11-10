@@ -181,22 +181,23 @@ impl VAFMatrix {
                             match matched[1] {
                                 // 0 = ref, 1 = alt
                                 1 => {
-                                    self.alternative[index] = match self.alternative[index] {
-                                        None => Some(1),
-                                        Some(num) => Some(num + 1),
-                                    };
-
                                     if !self.exists_in_seq_alt_hited(index) {
+                                        // Only count once when several kmer is matched on the same read.
+                                        self.alternative[index] = match self.alternative[index] {
+                                            None => Some(1),
+                                            Some(num) => Some(num + 1),
+                                        };
+
                                         self.seq_alt_hited.push(index);
                                     }
                                 }
                                 0 => {
-                                    self.reference[index] = match self.reference[index] {
-                                        None => Some(1),
-                                        Some(num) => Some(num + 1),
-                                    };
-                                    
                                     if !self.exists_in_seq_ref_hited(index) {
+                                        self.reference[index] = match self.reference[index] {
+                                            None => Some(1),
+                                            Some(num) => Some(num + 1),
+                                        };
+
                                         self.seq_ref_hited.push(index);
                                     }
                                 }
@@ -288,7 +289,12 @@ impl VAFMatrix {
 
             if let Some(ac) = alt_c {
                 if let Some(rc) = ref_c {
-                    self.vaf.push(Some(1.0 - (rc as f32 * 1.0 / (rc + ac) as f32)));
+                    if ac == 0 && rc == 0 {
+                        self.vaf.push(None);
+                    } else {
+                        self.vaf
+                            .push(Some(1.0 - (rc as f32 * 1.0 / (rc + ac) as f32)));
+                    }
                 } else {
                     self.vaf.push(None);
                 }
