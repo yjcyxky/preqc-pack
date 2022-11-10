@@ -7,21 +7,30 @@ use std::sync::Arc;
 use fastq::OwnedRecord;
 
 fn test_process_sequence() {
-    let fastq_path = "./examples/test.fastq.gz";
-    let pattern_file = "data/patterns.bson";
+    let fastq_path = "examples/test.fastq.gz";
+    let pattern_file = "data/patterns.json";
     let (patterns, indexes, count) =
         preqc_pack::qc::mislabeling::VAFMatrix::read_patterns(pattern_file);
     let mut count_vec: Vec<Option<usize>> = vec![None; count];
     for i in indexes {
         count_vec[i] = Some(0);
     }
+
+    let adapter_file = "data/adapter_list.txt";
+    let contaminant_file = "data/contaminant_list.txt";
+    let contaminants =
+        preqc_pack::qc::fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file);
+    let adapters = preqc_pack::qc::fastqc::AdapterContent::read_adapter_file(adapter_file);
+
     let qc_results = preqc_pack::qc::QCResults::run_qc_par(
         fastq_path,
+        Arc::new(adapters),
+        Arc::new(contaminants),
         Arc::new(patterns),
         Arc::new(count_vec),
         count,
         1,
-        Arc::new("all".to_string())
+        Arc::new("all".to_string()),
     );
     let re = serde_json::to_string(&qc_results).unwrap();
     println!("{}", serde_json::to_string(&qc_results).unwrap());
@@ -30,7 +39,7 @@ fn test_process_sequence() {
 }
 
 fn test_process_sequence1() {
-    let fastq_path = "./examples/test.fastq.gz";
+    let fastq_path = "examples/test.fastq.gz";
     let pattern_file = "data/patterns.bson";
     let (patterns, indexes, count) =
         preqc_pack::qc::mislabeling::VAFMatrix::read_patterns(pattern_file);
@@ -38,12 +47,22 @@ fn test_process_sequence1() {
     for i in indexes {
         count_vec[i] = Some(0);
     }
-    let qc_results = preqc_pack::qc::QCResults::run_fastqc_par(
+
+    let adapter_file = "data/adapter_list.txt";
+    let contaminant_file = "data/contaminant_list.txt";
+    let contaminants =
+        preqc_pack::qc::fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file);
+    let adapters = preqc_pack::qc::fastqc::AdapterContent::read_adapter_file(adapter_file);
+
+    let qc_results = preqc_pack::qc::QCResults::run_qc_par(
         fastq_path,
+        Arc::new(adapters),
+        Arc::new(contaminants),
         Arc::new(patterns),
         Arc::new(count_vec),
         count,
         10,
+        Arc::new("all".to_string()),
     );
     let re = serde_json::to_string(&qc_results).unwrap();
     println!("{}", serde_json::to_string(&qc_results).unwrap());

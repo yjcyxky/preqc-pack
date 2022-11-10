@@ -1,10 +1,9 @@
-use fastq::{OwnedRecord, Record};
+use fastq::Record;
 use probability::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::io::Read;
-use std::ops::Add;
 use std::{
     cmp,
     collections::HashMap,
@@ -29,9 +28,6 @@ const FASTQC_CONFIG_ADAPTER_FILE: &str = "";
 
 const INDICATOR_CONFIG_TILE_IGNORE: usize = 0;
 const INDICATOR_CONFIG_OVERREPESENTED_WARN: f64 = 0.1;
-
-const DEFAULT_FILF_PATH_CONTAMINANT: &str = "data/contaminant_list.txt";
-const DEFAULT_FILF_PATH_ADAPTER: &str = "data/adapter_list.txt";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QualityCount {
@@ -1726,26 +1722,40 @@ impl ContaminantHit {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ContaminentFinder {
-    contaminants: Vec<Contaminant>,
+pub struct OverRepresentedSeq {
+    seq: String,
+    count: usize,
+    percentage: f64,
+    contaminant_hit: Option<ContaminantHit>,
 }
 
-impl ContaminentFinder {
-    pub fn new() -> ContaminentFinder {
-        return ContaminentFinder {
-            contaminants: vec![],
+impl OverRepresentedSeq {
+    pub fn new(
+        _seq: String,
+        _count: usize,
+        _percentage: f64,
+        contaminants: &Vec<Contaminant>,
+    ) -> OverRepresentedSeq {
+        return OverRepresentedSeq {
+            seq: _seq.clone(),
+            count: _count,
+            percentage: _percentage,
+            contaminant_hit: OverRepresentedSeq::find_contaminants_hit(_seq, contaminants),
         };
     }
 
-    pub fn find_contaminants_hit(&mut self, sequences: String) -> Option<ContaminantHit> {
-        if self.contaminants.is_empty() {
-            self.make_contaminants_list();
+    pub fn find_contaminants_hit(
+        sequences: String,
+        contaminants: &Vec<Contaminant>,
+    ) -> Option<ContaminantHit> {
+        if contaminants.is_empty() {
+            panic!("No any contaminants");
         }
 
         let mut best_hit: Option<ContaminantHit> = None;
 
-        for c in 0..self.contaminants.len() {
-            let this_hit = (self.contaminants[c]).find_match(&sequences);
+        for c in 0..contaminants.len() {
+            let this_hit = (contaminants[c]).find_match(&sequences);
             if this_hit.is_none() {
                 continue;
             }
@@ -1759,51 +1769,6 @@ impl ContaminentFinder {
             }
         }
         return best_hit;
-    }
-
-    pub fn make_contaminants_list(&mut self) {
-        let mut file;
-        if FASTQC_CONFIG_CONTAMINANT_FILE != "" {
-            file = std::fs::File::open(FASTQC_CONFIG_CONTAMINANT_FILE).unwrap();
-        } else {
-            file = std::fs::File::open(DEFAULT_FILF_PATH_CONTAMINANT).unwrap();
-        }
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).unwrap();
-        for s in contents.lines() {
-            if s.starts_with('#') {
-                continue;
-            }
-            if s.trim().len() == 0 {
-                continue;
-            }
-
-            let r = Regex::new("\\t+").unwrap();
-            let sections: Vec<&str> = r.split(s).collect();
-            self.contaminants.push(Contaminant::new(
-                sections[0].trim().to_string(),
-                sections[1].trim().to_string(),
-            ));
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct OverRepresentedSeq {
-    seq: String,
-    count: usize,
-    percentage: f64,
-    contaminant_hit: Option<ContaminantHit>,
-}
-
-impl OverRepresentedSeq {
-    pub fn new(_seq: String, _count: usize, _percentage: f64) -> OverRepresentedSeq {
-        return OverRepresentedSeq {
-            seq: _seq.clone(),
-            count: _count,
-            percentage: _percentage,
-            contaminant_hit: ContaminentFinder::new().find_contaminants_hit(_seq),
-        };
     }
 
     pub fn seq(&self) -> String {
@@ -1838,10 +1803,12 @@ pub struct OverRepresentedSeqs {
     observation_cut_off: usize,
     unique_seq_count: usize,
     count_at_unique_limit: usize,
+    #[serde(skip_serializing)]
+    contaminants: Vec<Contaminant>,
 }
 
 impl OverRepresentedSeqs {
-    pub fn new() -> OverRepresentedSeqs {
+    pub fn new(contaminants: &String) -> OverRepresentedSeqs {
         return OverRepresentedSeqs {
             sequences: HashMap::new(),
             count: 0,
@@ -1851,7 +1818,44 @@ impl OverRepresentedSeqs {
             observation_cut_off: 100000,
             unique_seq_count: 0,
             count_at_unique_limit: 0,
+            contaminants: OverRepresentedSeqs::make_contaminants_list(contaminants),
         };
+    }
+
+    pub fn read_contaminants_file(contaminants_file: &str) -> String {
+        let f = match std::fs::File::open(contaminants_file) {
+            Ok(f) => f,
+            Err(msg) => panic!("Cannot open {} - {}", contaminants_file, msg),
+        };
+
+        return OverRepresentedSeqs::read_contaminants_list(f);
+    }
+
+    pub fn read_contaminants_list<R: Read>(mut reader: R) -> String {
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents).unwrap();
+        return contents;
+    }
+
+    pub fn make_contaminants_list(contaminants: &String) -> Vec<Contaminant> {
+        let mut contaminants_vec: Vec<Contaminant> = vec![];
+        for s in contaminants.lines() {
+            if s.starts_with('#') {
+                continue;
+            }
+            if s.trim().len() == 0 {
+                continue;
+            }
+
+            let r = Regex::new("\\t+").unwrap();
+            let sections: Vec<&str> = r.split(s).collect();
+            contaminants_vec.push(Contaminant::new(
+                sections[0].trim().to_string(),
+                sections[1].trim().to_string(),
+            ));
+        }
+
+        return contaminants_vec;
     }
 
     pub fn duplication_level_module(&mut self) -> Option<Box<SeqDuplicationLevel>> {
@@ -1886,7 +1890,7 @@ impl OverRepresentedSeqs {
             let percentage: f64 = seq_count as f64 / self.count as f64 * 100.0;
             if percentage > INDICATOR_CONFIG_OVERREPESENTED_WARN {
                 let os: OverRepresentedSeq =
-                    OverRepresentedSeq::new(seq.clone(), seq_count, percentage);
+                    OverRepresentedSeq::new(seq.clone(), seq_count, percentage, &self.contaminants);
                 self.overrepresented_seqs.push(os);
             }
         }
@@ -2210,22 +2214,12 @@ pub struct AdapterContent {
 }
 
 impl AdapterContent {
-    pub fn new() -> AdapterContent {
+    pub fn new(adapters_content: &String) -> AdapterContent {
         let mut adapters: Vec<Adapter> = Vec::new();
         let mut labels: Vec<String> = Vec::new();
         let mut longest_adapter = 0;
 
-        let mut file;
-        if FASTQC_CONFIG_CONTAMINANT_FILE != "" {
-            file = std::fs::File::open(FASTQC_CONFIG_ADAPTER_FILE).unwrap();
-        } else {
-            file = std::fs::File::open(DEFAULT_FILF_PATH_ADAPTER).unwrap();
-        }
-
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).unwrap();
-
-        for s in contents.lines() {
+        for s in adapters_content.lines() {
             if s.starts_with('#') {
                 continue;
             }
@@ -2256,6 +2250,21 @@ impl AdapterContent {
             x_labels: vec![],
             groups: vec![],
         };
+    }
+
+    pub fn read_adapter_file(adapter_filepath: &str) -> String {
+        let f = match std::fs::File::open(adapter_filepath) {
+            Ok(f) => f,
+            Err(msg) => panic!("Cannot open {} - {}", adapter_filepath, msg),
+        };
+
+        return AdapterContent::read_adapter_list(f);
+    }
+
+    pub fn read_adapter_list<R: Read>(mut reader: R) -> String {
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents).unwrap();
+        return contents;
     }
 
     pub fn process_sequence(&mut self, record: &impl Record) {
@@ -3057,7 +3066,7 @@ pub struct FastQC {
 }
 
 impl FastQC {
-    pub fn new() -> FastQC {
+    pub fn new(contaminants: &String, adapters: &String) -> FastQC {
         return FastQC {
             basic_stats: BasicStats::new(),
             per_base_seq_quality: PerBaseSeqQuality::new(),
@@ -3066,9 +3075,9 @@ impl FastQC {
             per_seq_gc_content: PerSeqGCContent::new(),
             per_base_n_content: PerBaseNContent::new(),
             seq_len_distribution: SeqLenDistribution::new(),
-            overrepresented_seqs: OverRepresentedSeqs::new(),
+            overrepresented_seqs: OverRepresentedSeqs::new(contaminants),
             seq_duplication_level: None,
-            adapter_content: AdapterContent::new(),
+            adapter_content: AdapterContent::new(adapters),
             kmer_content: KmerContent::new(),
             per_tile_quality_score: PerTileQualityScore::new(),
         };

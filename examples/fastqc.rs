@@ -4,7 +4,15 @@ use preqc_pack::qc::fastqc::FastQC;
 
 fn test_process_sequence() {
     let fastq_path = "examples/test.fastq.gz";
-    let mut qc = FastQC::new();
+
+    let adapter_file = "data/adapter_list.txt";
+    let contaminant_file = "data/contaminant_list.txt";
+    let contaminants =
+        preqc_pack::qc::fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file);
+    let adapters = preqc_pack::qc::fastqc::AdapterContent::read_adapter_file(adapter_file);
+
+    let mut qc = FastQC::new(&contaminants, &adapters);
+
     parse_path(Some(fastq_path), |parser| {
         parser
             .each(|record| {

@@ -34,6 +34,8 @@ impl QCResults {
 
     pub fn run_qc_par(
         fastq_path: &str,
+        adapters: Arc<String>,
+        contaminants: Arc<String>,
         patterns: Arc<HashMap<String, [usize; 2]>>,
         count_vec: Arc<Vec<Option<usize>>>,
         count: usize,
@@ -43,7 +45,7 @@ impl QCResults {
         match parse_path(Some(fastq_path), |parser| {
             let result: Result<Vec<_>, Error> =
                 parser.parallel_each(n_threads, move |record_sets| {
-                    let mut qc = fastqc::FastQC::new();
+                    let mut qc = fastqc::FastQC::new(&contaminants, &adapters);
                     let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
                     for record_set in record_sets {
                         for record in record_set.iter() {
@@ -77,8 +79,7 @@ impl QCResults {
                     merged_qc.finish();
 
                     let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
-                    let mut fastqc = merged_qc.update_name(filename);
-                    fastqc.finish();
+                    let fastqc = merged_qc.update_name(filename);
 
                     merged_vaf_matrix.finish();
 
@@ -102,13 +103,15 @@ impl QCResults {
 
     pub fn run_qc(
         fastq_path: &str,
+        adapters: Arc<String>,
+        contaminants: Arc<String>,
         patterns: &HashMap<String, [usize; 2]>,
         count_vec: &Vec<Option<usize>>,
         count: usize,
         which: &str,
     ) -> QCResults {
         match parse_path(Some(fastq_path), |parser| {
-            let mut qc = fastqc::FastQC::new();
+            let mut qc = fastqc::FastQC::new(&contaminants, &adapters);
             let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
             parser
                 .each(|record| {
