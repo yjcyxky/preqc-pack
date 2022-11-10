@@ -74,6 +74,8 @@ impl QCResults {
                         merged_vaf_matrix.merge(&[qc_results[i].vaf_matrix().to_owned()]);
                     }
 
+                    merged_qc.finish();
+
                     let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
                     let mut fastqc = merged_qc.update_name(filename);
                     fastqc.finish();
