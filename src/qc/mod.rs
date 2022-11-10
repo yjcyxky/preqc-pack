@@ -47,8 +47,7 @@ impl QCResults {
                     for record_set in record_sets {
                         for record in record_set.iter() {
                             qc.process_sequence(&record);
-                            vaf_matrix
-                                .process_sequence_unsafe(&patterns, &record);
+                            vaf_matrix.process_sequence_unsafe(&patterns, &record);
                         }
                     }
 
@@ -67,6 +66,8 @@ impl QCResults {
                         merged_qc.merge(&[qc_results[i].fastqc().to_owned()]);
                         merged_vaf_matrix.merge(&[qc_results[i].vaf_matrix().to_owned()]);
                     }
+
+                    merged_qc.finish();
 
                     let filename = Path::new(fastq_path).file_name().unwrap().to_str().unwrap();
 
