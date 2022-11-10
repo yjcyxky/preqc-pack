@@ -15,12 +15,13 @@ fn test_process_sequence() {
     for i in indexes {
         count_vec[i] = Some(0);
     }
-    let qc_results = preqc_pack::qc::QCResults::run_fastqc_par(
+    let qc_results = preqc_pack::qc::QCResults::run_qc_par(
         fastq_path,
         Arc::new(patterns),
         Arc::new(count_vec),
         count,
         1,
+        Arc::new("all".to_string())
     );
     let re = serde_json::to_string(&qc_results).unwrap();
     println!("{}", serde_json::to_string(&qc_results).unwrap());
