@@ -82,7 +82,7 @@ impl QualityCount {
         for i in 0..length {
             let idx = length - 1 - i;
             if self.actual_counts[idx] > 0 {
-                return char::from_u32(i as u32).unwrap();
+                return char::from_u32(idx as u32).unwrap();
             }
         }
 
@@ -1641,10 +1641,10 @@ impl Contaminant {
                                 id as usize,
                             ));
                         }
-                        start = i + 1;
-                        end = i + 1;
-                        mismatch_count = 0;
                     }
+                    start = i + 1;
+                    end = i + 1;
+                    mismatch_count = 0;
                 }
             }
         }
@@ -2368,7 +2368,9 @@ pub struct Kmer {
     sequence: String,
     count: usize,
     lowest_pvalue: f64,
+    #[serde(skip_serializing)]
     obs_exp_position: Vec<f64>,
+    #[serde(skip_serializing)]
     positions: Vec<usize>,
 }
 
@@ -2462,8 +2464,10 @@ impl Kmer {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KmerContent {
+    #[serde(skip_serializing)]
     kmers: HashMap<String, Kmer>,
     longest_sequence: usize,
+    #[serde(skip_serializing)]
     total_kmer_counts: Vec<Vec<usize>>,
     skip_count: usize,
     min_kmer_size: usize,
@@ -2478,6 +2482,7 @@ pub struct KmerContent {
 
     x_categories: Vec<String>,
     x_labels: Vec<String>,
+    #[serde(skip_serializing)]
     groups: Vec<BaseGroup>,
 }
 
@@ -2858,10 +2863,10 @@ impl PerTileQualityScore {
             tile = split_id_array[self.split_position as usize]
                 .parse::<usize>()
                 .unwrap();
-        } else if split_id_array.len() >= 5 {
+        } else if split_id_array.len() >= 7 {
             self.split_position = 4;
             tile = split_id_array[4].parse::<usize>().unwrap();
-        } else if split_id_array.len() >= 7 {
+        } else if split_id_array.len() >= 5 {
             self.split_position = 2;
             tile = split_id_array[2].parse::<usize>().unwrap();
         } else {
@@ -2915,11 +2920,12 @@ impl PerTileQualityScore {
         // Iterate through the tiles to check them all in case
         // we're dealing with unrepresentative data in the first one.
 
-        for (_, quality_count) in self.per_tile_quality_counts.clone() {
+        for (tile, quality_count) in self.per_tile_quality_counts.clone() {
+            println!("{}", tile);
             for q in 0..quality_count.len() {
                 if min_char == 0 {
-                    min_char = quality_count[q].get_min_char() as u8;
-                    max_char = quality_count[q].get_max_char() as u8;
+                    max_char = quality_count[q].clone().get_max_char() as u8;
+                    min_char = quality_count[q].clone().get_min_char() as u8;
                 } else {
                     if (quality_count[q].get_min_char() as u8) < min_char {
                         min_char = quality_count[q].get_min_char() as u8;
@@ -3117,8 +3123,8 @@ impl FastQC {
 
         self.kmer_content.finish();
 
-        self.per_tile_quality_score
-            .finish(self.basic_stats.phred.offset);
+        // self.per_tile_quality_score
+        //     .finish(self.basic_stats.phred.offset);
     }
 
     /// Process sequence one by one, and update the statistics data.
@@ -3177,7 +3183,7 @@ impl FastQC {
 
         self.kmer_content.process_sequence(record);
 
-        self.per_tile_quality_score.process_sequence(record);
+        // self.per_tile_quality_score.process_sequence(record);
     }
 
     /// Merge several FastQC instances.
