@@ -1,4 +1,5 @@
 use fastq::Record;
+use hashbrown::HashMap;
 use probability::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,7 @@ use std::cmp::Ordering;
 use std::io::Read;
 use std::{
     cmp,
-    collections::HashMap,
+    // collections::HashMap,
     f64::consts::{E, PI},
     str::from_utf8,
     vec,
@@ -23,8 +24,6 @@ const REVERSE_TYPE: usize = 2;
 
 const FASTQC_CONFIG_DUP_LENGTH: usize = 0;
 const FASTQC_CONFIG_KMER_SIZE: usize = 0;
-const FASTQC_CONFIG_CONTAMINANT_FILE: &str = "";
-const FASTQC_CONFIG_ADAPTER_FILE: &str = "";
 
 const INDICATOR_CONFIG_TILE_IGNORE: usize = 0;
 const INDICATOR_CONFIG_OVERREPESENTED_WARN: f64 = 0.1;
