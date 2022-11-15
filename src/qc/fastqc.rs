@@ -1805,6 +1805,7 @@ pub struct OverRepresentedSeqs {
     frozen: bool,
     #[serde(skip_serializing)]
     duplication_module: Option<Box<SeqDuplicationLevel>>,
+    // default 100000
     observation_cut_off: usize,
     unique_seq_count: usize,
     count_at_unique_limit: usize,
@@ -1813,14 +1814,17 @@ pub struct OverRepresentedSeqs {
 }
 
 impl OverRepresentedSeqs {
-    pub fn new(contaminants: &String) -> OverRepresentedSeqs {
+    pub fn new(
+        contaminants: &String,
+        overrepresented_max_unique_seq_count: usize,
+    ) -> OverRepresentedSeqs {
         return OverRepresentedSeqs {
             sequences: HashMap::new(),
             count: 0,
             overrepresented_seqs: vec![],
             frozen: false,
             duplication_module: None,
-            observation_cut_off: 100000,
+            observation_cut_off: overrepresented_max_unique_seq_count,
             unique_seq_count: 0,
             count_at_unique_limit: 0,
             contaminants: OverRepresentedSeqs::make_contaminants_list(contaminants),
@@ -2478,6 +2482,9 @@ pub struct KmerContent {
     min_gragh_value: f64,
     max_gragh_value: f64,
 
+    // One sample is ignored every skip_count samples,default 50
+    ignore_smapling_interval: usize,
+
     x_categories: Vec<String>,
     x_labels: Vec<String>,
     #[serde(skip_serializing)]
@@ -2485,7 +2492,7 @@ pub struct KmerContent {
 }
 
 impl KmerContent {
-    pub fn new() -> KmerContent {
+    pub fn new(kmer_ignore_smapling_interval: usize) -> KmerContent {
         let mut min_kmer_size = 7;
         let mut max_kmer_size = 7;
         if FASTQC_CONFIG_KMER_SIZE != 0 {
@@ -2506,6 +2513,7 @@ impl KmerContent {
             x_categories: vec![],
             x_labels: vec![],
             groups: vec![],
+            ignore_smapling_interval: kmer_ignore_smapling_interval,
         };
     }
 
@@ -2676,7 +2684,7 @@ impl KmerContent {
          */
         self.skip_count += 1;
 
-        if self.skip_count % 50 != 0 {
+        if self.skip_count % self.ignore_smapling_interval != 0 {
             return;
         }
 
@@ -2775,20 +2783,29 @@ pub struct PerTileQualityScore {
     means: Vec<Vec<f64>>,
     x_labels: Vec<String>,
     tiles: Vec<usize>,
-    // #[serde(skip_serializing)]
+    #[serde(skip_serializing)]
     high: usize,
-    // #[serde(skip_serializing)]
+    #[serde(skip_serializing)]
     total_count: usize,
-    // #[serde(skip_serializing)]
+    #[serde(skip_serializing)]
     split_position: isize,
-    // #[serde(skip_serializing)]
+    #[serde(skip_serializing)]
     max_deviation: f64,
     #[serde(skip_serializing)]
     ignore_in_report: bool,
+    // default 10000
+    #[serde(skip_serializing)]
+    continuous_sampling_boundary: usize,
+    // One sample is ignored every interval samples, default 10
+    #[serde(skip_serializing)]
+    ignore_smapling_interval: usize,
 }
 
 impl PerTileQualityScore {
-    pub fn new() -> PerTileQualityScore {
+    pub fn new(
+        tile_continuous_sampling_boundary: usize,
+        tile_ignore_smapling_interval: usize,
+    ) -> PerTileQualityScore {
         return PerTileQualityScore {
             per_tile_quality_counts: HashMap::new(),
             current_length: 0,
@@ -2800,6 +2817,8 @@ impl PerTileQualityScore {
             split_position: -1,
             max_deviation: 0.0,
             ignore_in_report: false,
+            continuous_sampling_boundary: tile_continuous_sampling_boundary,
+            ignore_smapling_interval: tile_ignore_smapling_interval,
         };
     }
 
@@ -2842,7 +2861,9 @@ impl PerTileQualityScore {
         }
 
         self.total_count += 1;
-        if self.total_count > 10000 && self.total_count % 10 != 0 {
+        if self.total_count > self.continuous_sampling_boundary
+            && self.total_count % self.ignore_smapling_interval != 0
+        {
             return;
         }
 
@@ -3011,7 +3032,9 @@ impl PerTileQualityScore {
 
     pub fn merge(&mut self, other: &PerTileQualityScore) {
         self.total_count += other.total_count;
-        if self.total_count > 10000 && self.total_count % 10 != 0 {
+        if self.total_count > self.continuous_sampling_boundary
+            && self.total_count % self.ignore_smapling_interval != 0
+        {
             return;
         }
 
@@ -3070,7 +3093,14 @@ pub struct FastQC {
 }
 
 impl FastQC {
-    pub fn new(contaminants: &String, adapters: &String) -> FastQC {
+    pub fn new(
+        contaminants: &String,
+        adapters: &String,
+        overrepresented_max_unique_seq_count: Option<usize>,
+        kmer_ignore_smapling_interval: Option<usize>,
+        tile_continuous_sampling_boundary: Option<usize>,
+        tile_ignore_smapling_interval: Option<usize>,
+    ) -> FastQC {
         return FastQC {
             basic_stats: BasicStats::new(),
             per_base_seq_quality: PerBaseSeqQuality::new(),
@@ -3079,11 +3109,17 @@ impl FastQC {
             per_seq_gc_content: PerSeqGCContent::new(),
             per_base_n_content: PerBaseNContent::new(),
             seq_len_distribution: SeqLenDistribution::new(),
-            overrepresented_seqs: OverRepresentedSeqs::new(contaminants),
+            overrepresented_seqs: OverRepresentedSeqs::new(
+                contaminants,
+                overrepresented_max_unique_seq_count.unwrap_or(100000),
+            ),
             seq_duplication_level: None,
             adapter_content: AdapterContent::new(adapters),
-            kmer_content: KmerContent::new(),
-            per_tile_quality_score: PerTileQualityScore::new(),
+            kmer_content: KmerContent::new(kmer_ignore_smapling_interval.unwrap_or(50)),
+            per_tile_quality_score: PerTileQualityScore::new(
+                tile_continuous_sampling_boundary.unwrap_or(10000),
+                tile_ignore_smapling_interval.unwrap_or(10),
+            ),
         };
     }
 
