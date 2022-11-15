@@ -1079,6 +1079,13 @@ impl PerSeqGCContent {
         };
     }
 
+    pub fn merge(&mut self, other: &PerSeqGCContent) {
+        // update y_gc_distribution
+        for i in 0..101 {
+            self.y_gc_distribution[i] += other.y_gc_distribution[i];
+        }
+    }
+
     fn process_sequence(&mut self, record: &impl Record) {
         // Because we keep a model around for every possible sequence length we
         // encounter we need to reduce the number of models.  We can do this by
@@ -1238,8 +1245,6 @@ impl PerSeqGCContent {
     fn finish(&mut self) {
         self.calculate_distribution();
     }
-
-    pub fn merge(&mut self, other: &PerSeqGCContent) {}
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2146,13 +2151,7 @@ impl Adapter {
     }
 
     pub fn merge(&mut self, other: &Adapter) {
-        let this_len = self.positions.len();
         let other_len = other.positions.len();
-
-        if this_len < other_len {
-            self.expand_length_to(other_len);
-        }
-
         for i in 0..other_len {
             self.positions[i] += other.positions[i];
         }
@@ -2348,17 +2347,16 @@ impl AdapterContent {
         let this_longest_len = self.longest_sequence;
         let other_longest_len = other.longest_sequence;
 
-        if other_longest_len > this_longest_len {
+        if other_longest_len > this_longest_len && other_longest_len > self.longest_adapter {
             self.longest_sequence = other_longest_len;
             let new_len = self.longest_sequence - self.longest_adapter + 1;
             for a in 0..self.adapters.len() {
                 self.adapters[a].expand_length_to(new_len);
-                self.adapters[a].merge(&other.adapters[a]);
             }
-        } else if other_longest_len < this_longest_len {
-            for a in 0..self.adapters.len() {
-                self.adapters[a].merge(&other.adapters[a]);
-            }
+        }
+
+        for a in 0..self.adapters.len() {
+            self.adapters[a].merge(&other.adapters[a]);
         }
     }
 }
@@ -3123,8 +3121,8 @@ impl FastQC {
 
         self.kmer_content.finish();
 
-        // self.per_tile_quality_score
-        //     .finish(self.basic_stats.phred.offset);
+        self.per_tile_quality_score
+            .finish(self.basic_stats.phred.offset);
     }
 
     /// Process sequence one by one, and update the statistics data.
@@ -3183,7 +3181,7 @@ impl FastQC {
 
         self.kmer_content.process_sequence(record);
 
-        // self.per_tile_quality_score.process_sequence(record);
+        self.per_tile_quality_score.process_sequence(record);
     }
 
     /// Merge several FastQC instances.
