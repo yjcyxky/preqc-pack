@@ -8,9 +8,37 @@ use serde::{Deserialize, Serialize};
 use fastq::parse_path;
 // use std::collections::HashMap;
 use hashbrown::HashMap;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Error;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
+
+fn init_pb() -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.enable_steady_tick(Duration::from_millis(120));
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.blue} {msg}")
+            .unwrap()
+            // For more spinners check out the cli-spinners project:
+            // https://github.com/sindresorhus/cli-spinners/blob/master/spinners.json
+            .tick_strings(&[
+                "▹▹▹▹▹▹▹▹▹▹",
+                "▸▹▹▹▹▹▹▹▹▹",
+                "▹▸▹▹▹▹▹▹▹▹",
+                "▹▹▸▹▹▹▹▹▹▹",
+                "▹▹▹▸▹▹▹▹▹▹",
+                "▹▹▹▹▸▹▹▹▹▹",
+                "▹▹▹▹▹▸▹▹▹▹",
+                "▹▹▹▹▹▹▸▹▹▹",
+                "▹▹▹▹▹▹▹▸▹▹",
+                "▹▹▹▹▹▹▹▹▸▹",
+                "▹▹▹▹▹▹▹▹▹▸",
+                "▪▪▪▪▪▪▪▪▪▪",
+            ]),
+    );
+    return pb;
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QCResults {
@@ -90,6 +118,8 @@ impl QCResults {
         fastqc_config: Arc<FastQCConfig>,
         mislabeling_config: Arc<MislabelingConfig>,
     ) -> QCResults {
+        // ProgressBar...
+        let pb = init_pb();
         match parse_path(Some(fastq_path), |parser| {
             let which_arc = Arc::clone(&which);
             let result: Result<Vec<_>, Error> =
@@ -187,6 +217,7 @@ impl QCResults {
         fastqc_config: &FastQCConfig,
         mislabeling_config: &MislabelingConfig,
     ) -> QCResults {
+        let pb = init_pb();
         match parse_path(Some(fastq_path), |parser| {
             let mut qc = fastqc::FastQC::new(
                 &fastqc_config.contaminants,
@@ -196,10 +227,12 @@ impl QCResults {
                 fastqc_config.tile_continuous_sampling_boundary,
                 fastqc_config.tile_ignore_smapling_interval,
             );
+
             let mut vaf_matrix = mislabeling::VAFMatrix::new(
                 mislabeling_config.count,
                 &mislabeling_config.count_vec,
             );
+
             parser
                 .each(|record| {
                     if which == "fastqc" || which == "all" {
@@ -209,7 +242,6 @@ impl QCResults {
                     if which == "checkmate" || which == "all" {
                         vaf_matrix.process_sequence_unsafe(&mislabeling_config.patterns, &record);
                     }
-
                     return true;
                 })
                 .expect("Invalid fastq file");

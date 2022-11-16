@@ -180,6 +180,8 @@ pub fn run_with_args(input: &str, args: &Arguments) {
 
             let mislabeling_config = qc::MislabelingConfig::new(patterns, count_vec, count);
 
+            info!("Run with {:?} threads", args.nthreads);
+
             let mut qc = if args.nthreads == 1 {
                 qc::QCResults::run_qc(
                     input,
@@ -188,7 +190,6 @@ pub fn run_with_args(input: &str, args: &Arguments) {
                     &mislabeling_config,
                 )
             } else {
-                info!("Run with {:?} threads", args.nthreads);
                 let which = Arc::new(args.which.to_string());
 
                 let fastqc_config_arc = Arc::new(fastqc_config);
@@ -199,7 +200,7 @@ pub fn run_with_args(input: &str, args: &Arguments) {
                     args.nthreads,
                     which,
                     fastqc_config_arc,
-                    mislabeling_config_arc,
+                    mislabeling_config_arc
                 )
             };
 
