@@ -118,8 +118,6 @@ impl QCResults {
         fastqc_config: Arc<FastQCConfig>,
         mislabeling_config: Arc<MislabelingConfig>,
     ) -> QCResults {
-        // ProgressBar...
-        let pb = init_pb();
         match parse_path(Some(fastq_path), |parser| {
             let which_arc = Arc::clone(&which);
             let result: Result<Vec<_>, Error> =
@@ -217,7 +215,6 @@ impl QCResults {
         fastqc_config: &FastQCConfig,
         mislabeling_config: &MislabelingConfig,
     ) -> QCResults {
-        let pb = init_pb();
         match parse_path(Some(fastq_path), |parser| {
             let mut qc = fastqc::FastQC::new(
                 &fastqc_config.contaminants,
