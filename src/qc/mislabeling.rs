@@ -1,8 +1,8 @@
-use log::*;
 use digest::{Digest, Output};
-use md5::Md5;
 use fastq::{Record, RefRecord};
 use hashbrown::HashMap;
+use log::*;
+use md5::Md5;
 use serde::{Deserialize, Serialize};
 use serde_json;
 // use std::collections::HashMap;
@@ -58,7 +58,7 @@ impl VAFMatrix {
             Err(msg) => panic!("Cannot open {} - {}", pattern_file, msg),
         };
 
-        return VAFMatrix::read_patterns_with_reader(f);
+        VAFMatrix::read_patterns_with_reader(f)
     }
 
     pub fn read_patterns_with_reader<R: Read>(
@@ -72,16 +72,16 @@ impl VAFMatrix {
         };
     }
 
-    pub fn new(count: usize, count_vec: &Vec<Option<usize>>) -> VAFMatrix {
-        return VAFMatrix {
+    pub fn new(count: usize, count_vec: &[Option<usize>]) -> VAFMatrix {
+        VAFMatrix {
             length: count,
             indexes: (0..count).into_iter().collect(),
-            reference: count_vec.clone(),
-            alternative: count_vec.clone(),
+            reference: count_vec.to_vec(),
+            alternative: count_vec.to_vec(),
             vaf: vec![],
             seq_alt_hited: vec![],
             seq_ref_hited: vec![],
-        };
+        }
     }
 
     pub fn merge(&mut self, vaf_matrixes: &[VAFMatrix]) {
@@ -116,7 +116,7 @@ impl VAFMatrix {
             init_values[i] = Some(0);
         }
 
-        return (
+        (
             VAFMatrix {
                 length: count,
                 indexes: (0..count).into_iter().collect(),
@@ -127,7 +127,7 @@ impl VAFMatrix {
                 seq_ref_hited: vec![],
             },
             patterns,
-        );
+        )
     }
 
     fn reset_seq_hited(&mut self) {
@@ -136,11 +136,11 @@ impl VAFMatrix {
     }
 
     fn exists_in_seq_ref_hited(&self, index: usize) -> bool {
-        return self.seq_ref_hited.contains(&index);
+        self.seq_ref_hited.contains(&index)
     }
 
     fn exists_in_seq_alt_hited(&self, index: usize) -> bool {
-        return self.seq_alt_hited.contains(&index);
+        self.seq_alt_hited.contains(&index)
     }
 
     fn hash<D: Digest + Default>(&self, seq: &[u8]) -> String
@@ -174,11 +174,11 @@ impl VAFMatrix {
                             let index = matched[0];
                             // For Debug
                             debug!(
-                              "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
-                              self.hash::<Md5>(seq),
-                              index,
-                              s,
-                              matched[1]
+                                "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
+                                self.hash::<Md5>(seq),
+                                index,
+                                s,
+                                matched[1]
                             );
                             match matched[1] {
                                 // 0 = ref, 1 = alt
@@ -241,11 +241,11 @@ impl VAFMatrix {
                             let index = matched[0];
                             // For Debug
                             debug!(
-                              "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
-                              self.hash::<Md5>(seq),
-                              index,
-                              s,
-                              matched[1]
+                                "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
+                                self.hash::<Md5>(seq),
+                                index,
+                                s,
+                                matched[1]
                             );
                             match matched[1] {
                                 // 0 = ref, 1 = alt

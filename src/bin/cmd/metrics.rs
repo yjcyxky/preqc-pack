@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use structopt::StructOpt;
 
+const MAX_USIZE_VALUE: usize = 2 ^ (64 - 1);
 const PATTERN_FILE: &[u8] = include_bytes!("../../../data/patterns.json");
 const ADAPTER_LIST: &[u8] = include_bytes!("../../../data/adapter_list.txt");
 const CONTAMINANT_LIST: &[u8] = include_bytes!("../../../data/contaminant_list.txt");
@@ -88,7 +89,7 @@ pub struct Arguments {
 }
 
 pub fn run(args: &Arguments) {
-    if Path::new(&args.output).is_dir() || &args.output == "" {
+    if Path::new(&args.output).is_dir() || args.output.is_empty() {
         for input in &args.input {
             run_with_args(input, args);
         }
@@ -103,10 +104,10 @@ pub fn run_with_args(input: &str, args: &Arguments) {
         if args.which == "checksum" {
             info!("Run checksum...");
             let md5sum = qc::hasher::checksum(input, &args.algorithm);
-            format!("{}", serde_json::to_string(&md5sum).unwrap())
+            serde_json::to_string(&md5sum).unwrap()
         } else {
             info!("Started reading patternfile");
-            let (patterns, indexes, count) = if args.pattern_file.len() > 0 {
+            let (patterns, indexes, count) = if !args.pattern_file.is_empty() {
                 qc::mislabeling::VAFMatrix::read_patterns(&args.pattern_file[..])
             } else {
                 qc::mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
@@ -122,7 +123,7 @@ pub fn run_with_args(input: &str, args: &Arguments) {
             info!("Finished building count array");
 
             info!("Started reading contaminants file");
-            let contaminants = if args.contaminant_file.len() > 0 {
+            let contaminants = if !args.contaminant_file.is_empty() {
                 qc::fastqc::OverRepresentedSeqs::read_contaminants_file(&args.contaminant_file[..])
             } else {
                 qc::fastqc::OverRepresentedSeqs::read_contaminants_list(CONTAMINANT_LIST)
@@ -130,7 +131,7 @@ pub fn run_with_args(input: &str, args: &Arguments) {
             info!("Finished reading contaminants file");
 
             info!("Started reading adapter file");
-            let adapters = if args.adapter_file.len() > 0 {
+            let adapters = if !args.adapter_file.is_empty() {
                 qc::fastqc::AdapterContent::read_adapter_file(&args.adapter_file[..])
             } else {
                 qc::fastqc::AdapterContent::read_adapter_list(ADAPTER_LIST)
@@ -146,25 +147,25 @@ pub fn run_with_args(input: &str, args: &Arguments) {
             }
 
             let overrepresented_max_unique_seq_count = if args.overrepresented_musc == 0 {
-                Some(2 ^ 64 - 1)
+                Some(MAX_USIZE_VALUE)
             } else {
                 Some(args.overrepresented_musc)
             };
 
             let kmer_ignore_sampling_interval = if args.kmer_isi == 0 {
-                Some(2 ^ 64 - 1)
+                Some(MAX_USIZE_VALUE)
             } else {
                 Some(args.kmer_isi)
             };
 
             let tile_continuous_sampling_boundary = if args.tile_csb == 0 {
-                Some(2 ^ 64 - 1)
+                Some(MAX_USIZE_VALUE)
             } else {
                 Some(args.tile_csb)
             };
 
             let tile_ignore_sampling_interval = if args.tile_isi == 0 {
-                Some(2 ^ 64 - 1)
+                Some(MAX_USIZE_VALUE)
             } else {
                 Some(args.tile_isi)
             };
@@ -205,10 +206,10 @@ pub fn run_with_args(input: &str, args: &Arguments) {
             };
 
             if args.which != "all" {
-                format!("{}", serde_json::to_string(&qc).unwrap())
+                serde_json::to_string(&qc).unwrap()
             } else {
                 qc.set_filemeta(Some(qc::hasher::checksum(input, &args.algorithm)));
-                format!("{}", serde_json::to_string(&qc).unwrap())
+                serde_json::to_string(&qc).unwrap()
             }
         }
     } else {
@@ -221,12 +222,12 @@ pub fn run_with_args(input: &str, args: &Arguments) {
     let basename = Path::new(input).file_stem().unwrap();
     let basename = Path::new(basename).file_stem().unwrap();
 
-    let filepath = if args.output.len() > 0 {
+    let filepath = if !args.output.is_empty() {
         Path::new(&args.output).join(format!("{}.json", basename.to_str().unwrap()))
     } else {
         Path::new(".").join(format!("{}.json", basename.to_str().unwrap()))
     };
 
     let mut f = File::create(filepath).unwrap();
-    f.write(output.as_bytes()).unwrap();
+    f.write_all(output.as_bytes()).unwrap();
 }

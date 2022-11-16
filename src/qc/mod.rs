@@ -8,37 +8,9 @@ use serde::{Deserialize, Serialize};
 use fastq::parse_path;
 // use std::collections::HashMap;
 use hashbrown::HashMap;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Error;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
-
-fn init_pb() -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.enable_steady_tick(Duration::from_millis(120));
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.blue} {msg}")
-            .unwrap()
-            // For more spinners check out the cli-spinners project:
-            // https://github.com/sindresorhus/cli-spinners/blob/master/spinners.json
-            .tick_strings(&[
-                "▹▹▹▹▹▹▹▹▹▹",
-                "▸▹▹▹▹▹▹▹▹▹",
-                "▹▸▹▹▹▹▹▹▹▹",
-                "▹▹▸▹▹▹▹▹▹▹",
-                "▹▹▹▸▹▹▹▹▹▹",
-                "▹▹▹▹▸▹▹▹▹▹",
-                "▹▹▹▹▹▸▹▹▹▹",
-                "▹▹▹▹▹▹▸▹▹▹",
-                "▹▹▹▹▹▹▹▸▹▹",
-                "▹▹▹▹▹▹▹▹▸▹",
-                "▹▹▹▹▹▹▹▹▹▸",
-                "▪▪▪▪▪▪▪▪▪▪",
-            ]),
-    );
-    return pb;
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QCResults {
@@ -66,14 +38,14 @@ impl FastQCConfig {
         tile_continuous_sampling_boundary: Option<usize>,
         tile_ignore_smapling_interval: Option<usize>,
     ) -> FastQCConfig {
-        return FastQCConfig {
+        FastQCConfig {
             overrepresented_max_unique_seq_count,
             kmer_ignore_smapling_interval,
             tile_continuous_sampling_boundary,
             tile_ignore_smapling_interval,
             adapters,
             contaminants,
-        };
+        }
     }
 }
 
@@ -90,21 +62,21 @@ impl MislabelingConfig {
         count_vec: Vec<Option<usize>>,
         count: usize,
     ) -> MislabelingConfig {
-        return MislabelingConfig {
+        MislabelingConfig {
             patterns,
             count_vec,
             count,
-        };
+        }
     }
 }
 
 impl QCResults {
     pub fn fastqc(&self) -> &Option<fastqc::FastQC> {
-        return &self.fastqc;
+        &self.fastqc
     }
 
     pub fn vaf_matrix(&self) -> &Option<mislabeling::VAFMatrix> {
-        return &self.vaf_matrix;
+        &self.vaf_matrix
     }
 
     pub fn set_filemeta(&mut self, filemeta: Option<hasher::Meta>) {
@@ -162,15 +134,15 @@ impl QCResults {
                     let which_step = &which[..];
                     let mut merged_qc = qc_results[0].fastqc().to_owned().unwrap();
                     let mut merged_vaf_matrix = qc_results[0].vaf_matrix().to_owned().unwrap();
-                    for i in 1..qc_results.len() {
+                    for item in qc_results.iter().skip(1) {
                         if which_step == "fastqc" || which_step == "all" {
-                            if let Some(fastqc) = qc_results[i].fastqc().to_owned() {
+                            if let Some(fastqc) = item.fastqc().to_owned() {
                                 merged_qc.merge(&[fastqc]);
                             }
                         }
 
                         if which_step == "checkmate" || which_step == "all" {
-                            if let Some(vaf_matrix) = qc_results[i].vaf_matrix().to_owned() {
+                            if let Some(vaf_matrix) = item.vaf_matrix().to_owned() {
                                 merged_vaf_matrix.merge(&[vaf_matrix]);
                             }
                         }
@@ -193,8 +165,8 @@ impl QCResults {
 
                     QCResults {
                         filemeta: None,
-                        fastqc: fastqc,
-                        vaf_matrix: vaf_matrix,
+                        fastqc,
+                        vaf_matrix,
                     }
                 }
                 Err(msg) => {
@@ -234,12 +206,13 @@ impl QCResults {
                 .each(|record| {
                     if which == "fastqc" || which == "all" {
                         qc.process_sequence(&record);
-                    }
+                    };
 
                     if which == "checkmate" || which == "all" {
                         vaf_matrix.process_sequence_unsafe(&mislabeling_config.patterns, &record);
-                    }
-                    return true;
+                    };
+
+                    true
                 })
                 .expect("Invalid fastq file");
 
@@ -260,8 +233,8 @@ impl QCResults {
 
             QCResults {
                 filemeta: None,
-                fastqc: fastqc,
-                vaf_matrix: vaf_matrix,
+                fastqc,
+                vaf_matrix,
             }
         }) {
             Err(msg) => {

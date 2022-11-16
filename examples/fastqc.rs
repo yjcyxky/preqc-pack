@@ -17,7 +17,7 @@ fn test_process_sequence() {
         parser
             .each(|record| {
                 qc.process_sequence(&record.to_owned_record());
-                return true;
+                true
             })
             .unwrap()
     })
