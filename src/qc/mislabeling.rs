@@ -1,4 +1,6 @@
+use log::*;
 use digest::{Digest, Output};
+use md5::Md5;
 use fastq::{Record, RefRecord};
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -171,13 +173,13 @@ impl VAFMatrix {
                             // matched: 0 - index; 1 - ref_or_alt;
                             let index = matched[0];
                             // For Debug
-                            // println!(
-                            //   "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
-                            //   self.hash::<Md5>(seq),
-                            //   index,
-                            //   s,
-                            //   matched_array[1].as_i32().unwrap()
-                            // );
+                            debug!(
+                              "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
+                              self.hash::<Md5>(seq),
+                              index,
+                              s,
+                              matched[1]
+                            );
                             match matched[1] {
                                 // 0 = ref, 1 = alt
                                 1 => {
@@ -206,7 +208,7 @@ impl VAFMatrix {
                         }
 
                         None => {
-                            // println!("No Matched Hash: {}", s);
+                            debug!("No Matched Hash: {}", s);
                         }
                     }
                 }
@@ -238,13 +240,13 @@ impl VAFMatrix {
                             // matched: 0 - index; 1 - ref_or_alt;
                             let index = matched[0];
                             // For Debug
-                            // println!(
-                            //   "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
-                            //   self.hash::<Md5>(seq),
-                            //   index,
-                            //   s,
-                            //   matched[1]
-                            // );
+                            debug!(
+                              "Seq: {}, Index: {}, Matched Hash: {}, RefAlt: {}",
+                              self.hash::<Md5>(seq),
+                              index,
+                              s,
+                              matched[1]
+                            );
                             match matched[1] {
                                 // 0 = ref, 1 = alt
                                 1 => {
@@ -270,7 +272,7 @@ impl VAFMatrix {
                         }
 
                         None => {
-                            // println!("No Matched Hash: {}", s);
+                            debug!("No Matched Hash: {}", s);
                         }
                     },
                 }

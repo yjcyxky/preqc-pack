@@ -1,3 +1,4 @@
+use log::*;
 use fastq::Record;
 use hashbrown::HashMap;
 use probability::prelude::*;
@@ -2939,7 +2940,7 @@ impl PerTileQualityScore {
         // we're dealing with unrepresentative data in the first one.
 
         for (tile, quality_count) in self.per_tile_quality_counts.clone() {
-            println!("{}", tile);
+            debug!("Tile is {}", tile);
             for q in 0..quality_count.len() {
                 if min_char == 0 {
                     max_char = quality_count[q].clone().get_max_char() as u8;

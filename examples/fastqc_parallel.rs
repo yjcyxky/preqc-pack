@@ -22,15 +22,17 @@ fn test_process_sequence() {
         preqc_pack::qc::fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file);
     let adapters = preqc_pack::qc::fastqc::AdapterContent::read_adapter_file(adapter_file);
 
+    let fastqc_config =
+        preqc_pack::qc::FastQCConfig::new(adapters, contaminants, None, None, None, None);
+
+    let mislabeling_config = preqc_pack::qc::MislabelingConfig::new(patterns, count_vec, count);
+
     let qc_results = preqc_pack::qc::QCResults::run_qc_par(
         fastq_path,
-        Arc::new(adapters),
-        Arc::new(contaminants),
-        Arc::new(patterns),
-        Arc::new(count_vec),
-        count,
         1,
         Arc::new("all".to_string()),
+        Arc::new(fastqc_config),
+        Arc::new(mislabeling_config),
     );
     let re = serde_json::to_string(&qc_results).unwrap();
     println!("{}", serde_json::to_string(&qc_results).unwrap());
@@ -54,15 +56,17 @@ fn test_process_sequence1() {
         preqc_pack::qc::fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file);
     let adapters = preqc_pack::qc::fastqc::AdapterContent::read_adapter_file(adapter_file);
 
+    let fastqc_config =
+        preqc_pack::qc::FastQCConfig::new(adapters, contaminants, None, None, None, None);
+
+    let mislabeling_config = preqc_pack::qc::MislabelingConfig::new(patterns, count_vec, count);
+
     let qc_results = preqc_pack::qc::QCResults::run_qc_par(
         fastq_path,
-        Arc::new(adapters),
-        Arc::new(contaminants),
-        Arc::new(patterns),
-        Arc::new(count_vec),
-        count,
         10,
         Arc::new("all".to_string()),
+        Arc::new(fastqc_config),
+        Arc::new(mislabeling_config),
     );
     let re = serde_json::to_string(&qc_results).unwrap();
     println!("{}", serde_json::to_string(&qc_results).unwrap());
@@ -90,5 +94,5 @@ fn test_basic_statistics() {
 fn main() {
     test_process_sequence();
     test_process_sequence1();
-    // test_basic_statistics();
+    test_basic_statistics();
 }

@@ -19,6 +19,57 @@ pub struct QCResults {
     vaf_matrix: Option<mislabeling::VAFMatrix>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FastQCConfig {
+    overrepresented_max_unique_seq_count: Option<usize>,
+    kmer_ignore_smapling_interval: Option<usize>,
+    tile_continuous_sampling_boundary: Option<usize>,
+    tile_ignore_smapling_interval: Option<usize>,
+    adapters: String,
+    contaminants: String,
+}
+
+impl FastQCConfig {
+    pub fn new(
+        adapters: String,
+        contaminants: String,
+        overrepresented_max_unique_seq_count: Option<usize>,
+        kmer_ignore_smapling_interval: Option<usize>,
+        tile_continuous_sampling_boundary: Option<usize>,
+        tile_ignore_smapling_interval: Option<usize>,
+    ) -> FastQCConfig {
+        return FastQCConfig {
+            overrepresented_max_unique_seq_count,
+            kmer_ignore_smapling_interval,
+            tile_continuous_sampling_boundary,
+            tile_ignore_smapling_interval,
+            adapters,
+            contaminants,
+        };
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MislabelingConfig {
+    patterns: HashMap<String, [usize; 2]>,
+    count_vec: Vec<Option<usize>>,
+    count: usize,
+}
+
+impl MislabelingConfig {
+    pub fn new(
+        patterns: HashMap<String, [usize; 2]>,
+        count_vec: Vec<Option<usize>>,
+        count: usize,
+    ) -> MislabelingConfig {
+        return MislabelingConfig {
+            patterns,
+            count_vec,
+            count,
+        };
+    }
+}
+
 impl QCResults {
     pub fn fastqc(&self) -> &Option<fastqc::FastQC> {
         return &self.fastqc;
@@ -34,21 +85,30 @@ impl QCResults {
 
     pub fn run_qc_par(
         fastq_path: &str,
-        adapters: Arc<String>,
-        contaminants: Arc<String>,
-        patterns: Arc<HashMap<String, [usize; 2]>>,
-        count_vec: Arc<Vec<Option<usize>>>,
-        count: usize,
         n_threads: usize,
         which: Arc<String>,
+        fastqc_config: Arc<FastQCConfig>,
+        mislabeling_config: Arc<MislabelingConfig>,
     ) -> QCResults {
         match parse_path(Some(fastq_path), |parser| {
             let which_arc = Arc::clone(&which);
             let result: Result<Vec<_>, Error> =
                 parser.parallel_each(n_threads, move |record_sets| {
                     let which_step = &which_arc[..];
-                    let mut qc = fastqc::FastQC::new(&contaminants, &adapters);
-                    let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
+                    let mut qc = fastqc::FastQC::new(
+                        &fastqc_config.contaminants,
+                        &fastqc_config.adapters,
+                        fastqc_config.overrepresented_max_unique_seq_count,
+                        fastqc_config.kmer_ignore_smapling_interval,
+                        fastqc_config.tile_continuous_sampling_boundary,
+                        fastqc_config.tile_ignore_smapling_interval,
+                    );
+
+                    let mut vaf_matrix = mislabeling::VAFMatrix::new(
+                        mislabeling_config.count,
+                        &mislabeling_config.count_vec,
+                    );
+
                     for record_set in record_sets {
                         for record in record_set.iter() {
                             if which_step == "fastqc" || which_step == "all" {
@@ -56,7 +116,8 @@ impl QCResults {
                             }
 
                             if which_step == "checkmate" || which_step == "all" {
-                                vaf_matrix.process_sequence_unsafe(&patterns, &record);
+                                vaf_matrix
+                                    .process_sequence_unsafe(&mislabeling_config.patterns, &record);
                             }
                         }
                     }
@@ -122,16 +183,23 @@ impl QCResults {
 
     pub fn run_qc(
         fastq_path: &str,
-        adapters: Arc<String>,
-        contaminants: Arc<String>,
-        patterns: &HashMap<String, [usize; 2]>,
-        count_vec: &Vec<Option<usize>>,
-        count: usize,
         which: &str,
+        fastqc_config: &FastQCConfig,
+        mislabeling_config: &MislabelingConfig,
     ) -> QCResults {
         match parse_path(Some(fastq_path), |parser| {
-            let mut qc = fastqc::FastQC::new(&contaminants, &adapters);
-            let mut vaf_matrix = mislabeling::VAFMatrix::new(count, &count_vec);
+            let mut qc = fastqc::FastQC::new(
+                &fastqc_config.contaminants,
+                &fastqc_config.adapters,
+                fastqc_config.overrepresented_max_unique_seq_count,
+                fastqc_config.kmer_ignore_smapling_interval,
+                fastqc_config.tile_continuous_sampling_boundary,
+                fastqc_config.tile_ignore_smapling_interval,
+            );
+            let mut vaf_matrix = mislabeling::VAFMatrix::new(
+                mislabeling_config.count,
+                &mislabeling_config.count_vec,
+            );
             parser
                 .each(|record| {
                     if which == "fastqc" || which == "all" {
@@ -139,7 +207,7 @@ impl QCResults {
                     }
 
                     if which == "checkmate" || which == "all" {
-                        vaf_matrix.process_sequence_unsafe(&patterns, &record);
+                        vaf_matrix.process_sequence_unsafe(&mislabeling_config.patterns, &record);
                     }
 
                     return true;

@@ -11,7 +11,7 @@ fn test_process_sequence() {
         preqc_pack::qc::fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file);
     let adapters = preqc_pack::qc::fastqc::AdapterContent::read_adapter_file(adapter_file);
 
-    let mut qc = FastQC::new(&contaminants, &adapters);
+    let mut qc = FastQC::new(&contaminants, &adapters, None, None, None, None);
 
     parse_path(Some(fastq_path), |parser| {
         parser
