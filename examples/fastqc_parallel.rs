@@ -89,6 +89,6 @@ fn test_basic_statistics() {
 }
 fn main() {
     test_process_sequence();
-    // test_process_sequence1();
+    test_process_sequence1();
     // test_basic_statistics();
 }
