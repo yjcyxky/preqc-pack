@@ -37,7 +37,7 @@ fn test_process_sequence() {
     let re = serde_json::to_string(&qc_results).unwrap();
     println!("{}", serde_json::to_string(&qc_results).unwrap());
     let mut f = File::create("./examples/result.json").unwrap();
-    f.write_all(re.as_bytes()).unwrap();
+    f.write(re.as_bytes()).unwrap();
 }
 
 fn test_process_sequence1() {
@@ -71,7 +71,7 @@ fn test_process_sequence1() {
     let re = serde_json::to_string(&qc_results).unwrap();
     println!("{}", serde_json::to_string(&qc_results).unwrap());
     let mut f = File::create("./examples/result1.json").unwrap();
-    f.write_all(re.as_bytes()).unwrap();
+    f.write(re.as_bytes()).unwrap();
 }
 
 fn test_basic_statistics() {

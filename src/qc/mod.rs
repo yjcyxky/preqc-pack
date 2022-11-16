@@ -38,14 +38,14 @@ impl FastQCConfig {
         tile_continuous_sampling_boundary: Option<usize>,
         tile_ignore_smapling_interval: Option<usize>,
     ) -> FastQCConfig {
-        FastQCConfig {
+        return FastQCConfig {
             overrepresented_max_unique_seq_count,
             kmer_ignore_smapling_interval,
             tile_continuous_sampling_boundary,
             tile_ignore_smapling_interval,
             adapters,
             contaminants,
-        }
+        };
     }
 }
 
@@ -62,21 +62,21 @@ impl MislabelingConfig {
         count_vec: Vec<Option<usize>>,
         count: usize,
     ) -> MislabelingConfig {
-        MislabelingConfig {
+        return MislabelingConfig {
             patterns,
             count_vec,
             count,
-        }
+        };
     }
 }
 
 impl QCResults {
     pub fn fastqc(&self) -> &Option<fastqc::FastQC> {
-        &self.fastqc
+        return &self.fastqc;
     }
 
     pub fn vaf_matrix(&self) -> &Option<mislabeling::VAFMatrix> {
-        &self.vaf_matrix
+        return &self.vaf_matrix;
     }
 
     pub fn set_filemeta(&mut self, filemeta: Option<hasher::Meta>) {
@@ -134,15 +134,15 @@ impl QCResults {
                     let which_step = &which[..];
                     let mut merged_qc = qc_results[0].fastqc().to_owned().unwrap();
                     let mut merged_vaf_matrix = qc_results[0].vaf_matrix().to_owned().unwrap();
-                    for item in qc_results.iter().skip(1) {
+                    for i in 1..qc_results.len() {
                         if which_step == "fastqc" || which_step == "all" {
-                            if let Some(fastqc) = item.fastqc().to_owned() {
+                            if let Some(fastqc) = qc_results[i].fastqc().to_owned() {
                                 merged_qc.merge(&[fastqc]);
                             }
                         }
 
                         if which_step == "checkmate" || which_step == "all" {
-                            if let Some(vaf_matrix) = item.vaf_matrix().to_owned() {
+                            if let Some(vaf_matrix) = qc_results[i].vaf_matrix().to_owned() {
                                 merged_vaf_matrix.merge(&[vaf_matrix]);
                             }
                         }
@@ -165,8 +165,8 @@ impl QCResults {
 
                     QCResults {
                         filemeta: None,
-                        fastqc,
-                        vaf_matrix,
+                        fastqc: fastqc,
+                        vaf_matrix: vaf_matrix,
                     }
                 }
                 Err(msg) => {
@@ -196,23 +196,21 @@ impl QCResults {
                 fastqc_config.tile_continuous_sampling_boundary,
                 fastqc_config.tile_ignore_smapling_interval,
             );
-
             let mut vaf_matrix = mislabeling::VAFMatrix::new(
                 mislabeling_config.count,
                 &mislabeling_config.count_vec,
             );
-
             parser
                 .each(|record| {
                     if which == "fastqc" || which == "all" {
                         qc.process_sequence(&record);
-                    };
+                    }
 
                     if which == "checkmate" || which == "all" {
                         vaf_matrix.process_sequence_unsafe(&mislabeling_config.patterns, &record);
-                    };
+                    }
 
-                    true
+                    return true;
                 })
                 .expect("Invalid fastq file");
 
@@ -233,8 +231,8 @@ impl QCResults {
 
             QCResults {
                 filemeta: None,
-                fastqc,
-                vaf_matrix,
+                fastqc: fastqc,
+                vaf_matrix: vaf_matrix,
             }
         }) {
             Err(msg) => {

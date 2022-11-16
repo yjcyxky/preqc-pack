@@ -6,7 +6,6 @@ use std::path::Path;
 use std::sync::Arc;
 use structopt::StructOpt;
 
-const MAX_USIZE_VALUE: usize = 2 ^ (64 - 1);
 const PATTERN_FILE: &[u8] = include_bytes!("../../../data/patterns.json");
 const ADAPTER_LIST: &[u8] = include_bytes!("../../../data/adapter_list.txt");
 const CONTAMINANT_LIST: &[u8] = include_bytes!("../../../data/contaminant_list.txt");
@@ -89,7 +88,7 @@ pub struct Arguments {
 }
 
 pub fn run(args: &Arguments) {
-    if Path::new(&args.output).is_dir() || args.output.is_empty() {
+    if Path::new(&args.output).is_dir() || &args.output == "" {
         for input in &args.input {
             run_with_args(input, args);
         }
@@ -104,10 +103,10 @@ pub fn run_with_args(input: &str, args: &Arguments) {
         if args.which == "checksum" {
             info!("Run checksum...");
             let md5sum = qc::hasher::checksum(input, &args.algorithm);
-            serde_json::to_string(&md5sum).unwrap()
+            format!("{}", serde_json::to_string(&md5sum).unwrap())
         } else {
             info!("Started reading patternfile");
-            let (patterns, indexes, count) = if !args.pattern_file.is_empty() {
+            let (patterns, indexes, count) = if args.pattern_file.len() > 0 {
                 qc::mislabeling::VAFMatrix::read_patterns(&args.pattern_file[..])
             } else {
                 qc::mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
@@ -123,7 +122,7 @@ pub fn run_with_args(input: &str, args: &Arguments) {
             info!("Finished building count array");
 
             info!("Started reading contaminants file");
-            let contaminants = if !args.contaminant_file.is_empty() {
+            let contaminants = if args.contaminant_file.len() > 0 {
                 qc::fastqc::OverRepresentedSeqs::read_contaminants_file(&args.contaminant_file[..])
             } else {
                 qc::fastqc::OverRepresentedSeqs::read_contaminants_list(CONTAMINANT_LIST)
@@ -131,7 +130,7 @@ pub fn run_with_args(input: &str, args: &Arguments) {
             info!("Finished reading contaminants file");
 
             info!("Started reading adapter file");
-            let adapters = if !args.adapter_file.is_empty() {
+            let adapters = if args.adapter_file.len() > 0 {
                 qc::fastqc::AdapterContent::read_adapter_file(&args.adapter_file[..])
             } else {
                 qc::fastqc::AdapterContent::read_adapter_list(ADAPTER_LIST)
@@ -147,25 +146,25 @@ pub fn run_with_args(input: &str, args: &Arguments) {
             }
 
             let overrepresented_max_unique_seq_count = if args.overrepresented_musc == 0 {
-                Some(MAX_USIZE_VALUE)
+                Some(2 ^ 64 - 1)
             } else {
                 Some(args.overrepresented_musc)
             };
 
             let kmer_ignore_sampling_interval = if args.kmer_isi == 0 {
-                Some(MAX_USIZE_VALUE)
+                Some(2 ^ 64 - 1)
             } else {
                 Some(args.kmer_isi)
             };
 
             let tile_continuous_sampling_boundary = if args.tile_csb == 0 {
-                Some(MAX_USIZE_VALUE)
+                Some(2 ^ 64 - 1)
             } else {
                 Some(args.tile_csb)
             };
 
             let tile_ignore_sampling_interval = if args.tile_isi == 0 {
-                Some(MAX_USIZE_VALUE)
+                Some(2 ^ 64 - 1)
             } else {
                 Some(args.tile_isi)
             };
@@ -182,7 +181,6 @@ pub fn run_with_args(input: &str, args: &Arguments) {
             let mislabeling_config = qc::MislabelingConfig::new(patterns, count_vec, count);
 
             info!("Run with {:?} threads", args.nthreads);
-
             let mut qc = if args.nthreads == 1 {
                 qc::QCResults::run_qc(
                     input,
@@ -201,15 +199,15 @@ pub fn run_with_args(input: &str, args: &Arguments) {
                     args.nthreads,
                     which,
                     fastqc_config_arc,
-                    mislabeling_config_arc
+                    mislabeling_config_arc,
                 )
             };
 
             if args.which != "all" {
-                serde_json::to_string(&qc).unwrap()
+                format!("{}", serde_json::to_string(&qc).unwrap())
             } else {
                 qc.set_filemeta(Some(qc::hasher::checksum(input, &args.algorithm)));
-                serde_json::to_string(&qc).unwrap()
+                format!("{}", serde_json::to_string(&qc).unwrap())
             }
         }
     } else {
@@ -222,12 +220,12 @@ pub fn run_with_args(input: &str, args: &Arguments) {
     let basename = Path::new(input).file_stem().unwrap();
     let basename = Path::new(basename).file_stem().unwrap();
 
-    let filepath = if !args.output.is_empty() {
+    let filepath = if args.output.len() > 0 {
         Path::new(&args.output).join(format!("{}.json", basename.to_str().unwrap()))
     } else {
         Path::new(".").join(format!("{}.json", basename.to_str().unwrap()))
     };
 
     let mut f = File::create(filepath).unwrap();
-    f.write_all(output.as_bytes()).unwrap();
+    f.write(output.as_bytes()).unwrap();
 }

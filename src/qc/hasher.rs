@@ -17,16 +17,16 @@ impl Meta {
   pub fn new(md5sum: &str, filesize: usize) -> Meta {
     Meta {
       md5sum: String::from(md5sum),
-      filesize,
+      filesize: filesize,
     }
   }
 }
 
 pub fn init_meta() -> Meta {
-  Meta {
+  return Meta {
     md5sum: String::from(""),
     filesize: 0,
-  }
+  };
 }
 
 /// Compute digest value for given `Reader` and print it
@@ -59,15 +59,16 @@ where
   }
 
   return Meta {
-    filesize,
+    filesize: filesize,
     md5sum: format!("{:x}", sh.finalize()),
   };
 }
 
 pub fn checksum(input: &str, algorithm: &str) -> Meta {
   let mut file = fs::File::open(input).unwrap();
-  match algorithm {
+  let meta = match algorithm {
     "blake2b" => process::<Blake2b, _>(&mut file),
     _ => process::<Md5, _>(&mut file),
-  }
+  };
+  meta
 }
