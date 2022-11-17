@@ -2,10 +2,10 @@ use log::*;
 use digest::{Digest, Output};
 use md5::Md5;
 use fastq::{Record, RefRecord};
-use hashbrown::HashMap;
+// use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json;
-// use std::collections::HashMap;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 

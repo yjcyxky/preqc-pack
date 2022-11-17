@@ -1,5 +1,4 @@
 use fastq::Record;
-use hashbrown::HashMap;
 use log::*;
 use probability::prelude::*;
 use regex::Regex;
@@ -8,7 +7,7 @@ use std::cmp::Ordering;
 use std::io::Read;
 use std::{
     cmp,
-    // collections::HashMap,
+    collections::HashMap,
     f64::consts::{E, PI},
     str::from_utf8,
     vec,
@@ -1954,7 +1953,12 @@ impl OverRepresentedSeqs {
     pub fn merge(&mut self, other: &OverRepresentedSeqs) {
         let mut copy_count = self.count;
         self.count += other.count;
-        for (seq, count) in other.sequences.clone() {
+
+        let mut seqs_vec = other.sequences.keys().collect::<Vec<_>>();
+        seqs_vec.sort_by(|a, b| b.cmp(&a));
+        for _seq in seqs_vec {
+            let seq = (*_seq).clone();
+            let count = other.sequences[&seq];
             copy_count += count;
             if self.sequences.contains_key(&seq) {
                 let current_count = self.sequences[&seq] + count;
@@ -2638,7 +2642,8 @@ impl KmerContent {
             } else if b.max_obs_exp() > a.max_obs_exp() {
                 Ordering::Greater
             } else {
-                Ordering::Equal
+                // Ordering::Equal
+                b.sequence.cmp(&a.sequence)
             }
         });
 

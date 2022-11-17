@@ -9,7 +9,7 @@ version = "0.2.0"
 [dependencies]
 anyhow = "1.0.2"
 blake2 = "0.9"
-hashbrown = { version = "0.12", features = ["serde"] }
+# hashbrown = { version = "0.12", features = ["serde"] }
 digest = "0.9.0"
 exitcode = "1.1.2"
 fastq = "0.6.0"

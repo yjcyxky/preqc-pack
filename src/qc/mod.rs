@@ -6,8 +6,8 @@ pub mod util;
 use serde::{Deserialize, Serialize};
 
 use fastq::parse_path;
-// use std::collections::HashMap;
-use hashbrown::HashMap;
+use std::collections::HashMap;
+// use hashbrown::HashMap;
 use std::io::Error;
 use std::path::Path;
 use std::sync::Arc;
