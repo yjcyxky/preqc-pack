@@ -63,7 +63,7 @@ fn test_process_sequence1() {
 
     let qc_results = preqc_pack::qc::QCResults::run_qc_par(
         fastq_path,
-        10,
+        1,
         Arc::new("all".to_string()),
         Arc::new(fastqc_config),
         Arc::new(mislabeling_config),
@@ -94,5 +94,5 @@ fn test_basic_statistics() {
 fn main() {
     test_process_sequence();
     test_process_sequence1();
-    test_basic_statistics();
+    // test_basic_statistics();
 }
