@@ -1,6 +1,6 @@
-use log::*;
 use fastq::Record;
 use hashbrown::HashMap;
+use log::*;
 use probability::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -1949,20 +1949,22 @@ impl OverRepresentedSeqs {
     }
 
     pub fn merge(&mut self, other: &OverRepresentedSeqs) {
+        let mut copy_count = self.count;
+        self.count += other.count;
         for (seq, count) in other.sequences.clone() {
-            self.count += count;
+            copy_count += count;
             if self.sequences.contains_key(&seq) {
                 let current_count = self.sequences[&seq] + count;
                 self.sequences.insert(seq, current_count);
 
                 if !self.frozen {
-                    self.count_at_unique_limit = self.count;
+                    self.count_at_unique_limit = copy_count;
                 }
             } else {
                 if !self.frozen {
                     self.sequences.insert(seq, count);
                     self.unique_seq_count += 1;
-                    self.count_at_unique_limit = self.count;
+                    self.count_at_unique_limit = copy_count;
                     if self.unique_seq_count == self.observation_cut_off {
                         self.frozen = true;
                     }
