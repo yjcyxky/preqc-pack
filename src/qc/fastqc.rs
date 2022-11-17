@@ -705,6 +705,7 @@ impl BasicStats {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PerSeqQualityScore {
+    #[serde(skip_serializing)]
     average_score_counts: HashMap<usize, usize>,
     y_category_count: Vec<usize>,
     x_category_quality: Vec<usize>,
@@ -1799,9 +1800,11 @@ impl OverRepresentedSeq {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OverRepresentedSeqs {
+    #[serde(skip_serializing)]
     sequences: HashMap<String, usize>,
     count: usize,
     overrepresented_seqs: Vec<OverRepresentedSeq>,
+    #[serde(skip_serializing)]
     frozen: bool,
     #[serde(skip_serializing)]
     duplication_module: Option<Box<SeqDuplicationLevel>>,
@@ -2064,9 +2067,14 @@ impl SeqDuplicationLevel {
         let mut dedup_total: f64 = 0.0;
         let mut raw_total: f64 = 0.0;
 
-        for (dup_level, corrected_count) in corrected_counts {
+        let mut dup_level_vec = corrected_counts.keys().collect::<Vec<_>>();
+        dup_level_vec.sort_by(|a, b| b.cmp(&a));
+
+        for dup_level in dup_level_vec {
+            let mut corrected_count = corrected_counts[dup_level];
+
             dedup_total += corrected_count;
-            raw_total += corrected_count * dup_level as f64;
+            raw_total += corrected_count * (*dup_level) as f64;
 
             let mut dup_slot = dup_level - 1;
 
@@ -2087,7 +2095,7 @@ impl SeqDuplicationLevel {
             }
 
             self.dedup_percentages[dup_slot] += corrected_count;
-            self.total_percentages[dup_slot] += corrected_count * dup_level as f64;
+            self.total_percentages[dup_slot] += corrected_count * (*dup_level) as f64;
         }
 
         self.labels = vec!["".to_string(); 16];
@@ -2544,8 +2552,10 @@ impl KmerContent {
         self.groups = BaseGroup::make_base_groups(self.longest_sequence - self.min_kmer_size + 1);
 
         let mut uneven_kemers: Vec<Kmer> = vec![];
+        let mut kmers_vec = self.kmers.values().collect::<Vec<_>>();
+        kmers_vec.sort_by(|a, b| b.count.cmp(&a.count));
 
-        for (_, kmer) in self.kmers.clone() {
+        for kmer in kmers_vec {
             let mut k = kmer.clone();
             let seq: String = k.sequence();
             let count = k.count();
