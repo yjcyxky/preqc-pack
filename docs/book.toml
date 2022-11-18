@@ -1,0 +1,6 @@
+[book]
+authors = ["Jingcheng Yang <yjcyxky@163.com>", "Haonan Chen <haonanchen0815@163.com>"]
+language = "en"
+multilingual = false
+src = "src"
+title = "PreQC Pack: A quality control tool for high throughput sequence data."
