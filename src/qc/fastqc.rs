@@ -383,6 +383,7 @@ pub struct PerBaseSeqQuality {
     #[serde(skip_serializing)]
     quality_counts: Vec<QualityCount>,
     #[serde(skip_serializing)]
+    xlabels: Vec<String>,
     base_pos: Vec<usize>,
     mean: Vec<f64>,
     median: Vec<f64>,
@@ -390,7 +391,6 @@ pub struct PerBaseSeqQuality {
     upper_quartile: Vec<f64>,
     lowest: Vec<f64>,
     highest: Vec<f64>,
-    xlabels: Vec<String>,
 }
 
 impl PerBaseSeqQuality {
@@ -510,7 +510,9 @@ impl PerBaseSeqQuality {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BasicStats {
-    name: String,
+    file_name: String,
+    file_type: String,
+    phred: PhredEncoding,
     total_reads: usize,
     total_bases: usize,
     t_count: usize,
@@ -519,18 +521,16 @@ pub struct BasicStats {
     a_count: usize,
     n_count: usize,
     gc_percentage: f64,
-    lowest_char: usize,
-    highest_char: usize,
-    file_type: String,
     min_length: usize,
     max_length: usize,
-    phred: PhredEncoding,
+    lowest_char: usize,
+    highest_char: usize,
 }
 
 impl BasicStats {
     pub fn new() -> BasicStats {
         return BasicStats {
-            name: "".to_string(),
+            file_name: "".to_string(),
             total_reads: 0,
             total_bases: 0,
             t_count: 0,
@@ -610,7 +610,7 @@ impl BasicStats {
     }
 
     pub fn update_name(mut self, filename: &str) -> BasicStats {
-        self.name = filename.to_string();
+        self.file_name = filename.to_string();
         self
     }
 
@@ -706,10 +706,12 @@ impl BasicStats {
 pub struct PerSeqQualityScore {
     #[serde(skip_serializing)]
     average_score_counts: HashMap<usize, usize>,
-    y_category_count: Vec<usize>,
     x_category_quality: Vec<usize>,
+    y_category_count: Vec<usize>,
+    #[serde(skip_serializing)]
     max_counts: usize,
     most_frequent_score: usize,
+    #[serde(skip_serializing)]
     lowest_char: usize,
 }
 
@@ -801,12 +803,12 @@ impl PerSeqQualityScore {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PerBaseSeqContent {
+    x_category: Vec<String>,
     g_counts: Vec<usize>,
     c_counts: Vec<usize>,
     a_counts: Vec<usize>,
     t_counts: Vec<usize>,
     percentages: Vec<Vec<f64>>,
-    x_category: Vec<String>,
 }
 
 impl PerBaseSeqContent {
@@ -1061,6 +1063,7 @@ pub struct PerSeqGCContent {
     x_category: Vec<usize>,
     y_gc_distribution: Vec<f64>,
     y_theo_distribution: Vec<f64>,
+    #[serde(skip_serializing)]
     max: f64,
     deviation_percent: f64,
     #[serde(skip_serializing)]
@@ -1249,10 +1252,10 @@ impl PerSeqGCContent {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PerBaseNContent {
+    x_categories: Vec<String>,
     n_counts: Vec<usize>,
     not_n_counts: Vec<usize>,
     percentages: Vec<f64>,
-    x_categories: Vec<String>,
 }
 
 impl PerBaseNContent {
@@ -1338,9 +1341,11 @@ impl PerBaseNContent {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SeqLenDistribution {
+    #[serde(skip_serializing)]
     len_counts: Vec<usize>,
-    graph_counts: Vec<f64>,
     x_categories: Vec<String>,
+    graph_counts: Vec<f64>,
+    #[serde(skip_serializing)]
     max: usize,
 }
 
@@ -1802,7 +1807,6 @@ pub struct OverRepresentedSeqs {
     #[serde(skip_serializing)]
     sequences: HashMap<String, usize>,
     count: usize,
-    overrepresented_seqs: Vec<OverRepresentedSeq>,
     #[serde(skip_serializing)]
     frozen: bool,
     #[serde(skip_serializing)]
@@ -1811,6 +1815,7 @@ pub struct OverRepresentedSeqs {
     observation_cut_off: usize,
     unique_seq_count: usize,
     count_at_unique_limit: usize,
+    overrepresented_seqs: Vec<OverRepresentedSeq>,
     #[serde(skip_serializing)]
     contaminants: Vec<Contaminant>,
 }
@@ -2222,10 +2227,11 @@ pub struct AdapterContent {
     #[serde(skip_serializing)]
     adapters: Vec<Adapter>,
 
-    // This is the data for the Kmers which are going to be placed on the graph
-    enrichments: Vec<Vec<f64>>,
     labels: Vec<String>,
     x_labels: Vec<String>,
+
+    // This is the data for the Kmers which are going to be placed on the graph
+    enrichments: Vec<Vec<f64>>,
     #[serde(skip_serializing)]
     groups: Vec<BaseGroup>,
 }
@@ -2482,21 +2488,28 @@ impl Kmer {
 pub struct KmerContent {
     #[serde(skip_serializing)]
     kmers: HashMap<String, Kmer>,
+    #[serde(skip_serializing)]
     longest_sequence: usize,
     #[serde(skip_serializing)]
     total_kmer_counts: Vec<Vec<usize>>,
+    #[serde(skip_serializing)]
     skip_count: usize,
+    #[serde(skip_serializing)]
     min_kmer_size: usize,
+    #[serde(skip_serializing)]
     max_kmer_size: usize,
     // This is the full set of Kmers to be reported
     enriched_kmers: Vec<Kmer>,
     // This is the data for the Kmers which are going to be placed on the graph
     enrichments: Vec<Vec<f64>>,
     // For the graph we also need to know the scale we need to use on the axes.
+    #[serde(skip_serializing)]
     min_gragh_value: f64,
+    #[serde(skip_serializing)]
     max_gragh_value: f64,
 
     // One sample is ignored every skip_count samples,default 50
+    #[serde(skip_serializing)]
     ignore_smapling_interval: usize,
 
     x_categories: Vec<String>,
@@ -2797,9 +2810,9 @@ pub struct PerTileQualityScore {
     per_tile_quality_counts: HashMap<usize, Vec<QualityCount>>,
     #[serde(skip_serializing)]
     current_length: usize,
-    means: Vec<Vec<f64>>,
     x_labels: Vec<String>,
     tiles: Vec<usize>,
+    means: Vec<Vec<f64>>,
     #[serde(skip_serializing)]
     high: usize,
     #[serde(skip_serializing)]
@@ -3141,7 +3154,7 @@ impl FastQC {
     }
 
     pub fn update_name(mut self, filename: &str) -> FastQC {
-        self.basic_stats.name = filename.to_string();
+        self.basic_stats.file_name = filename.to_string();
         self
     }
 

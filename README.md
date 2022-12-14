@@ -1,8 +1,8 @@
 # PreQC Pack: A quality control tool for high throughput sequence data.
 
-Check out the [User Guide]() for a list of features and installation and usage information. The User Guide also serves as a demonstration to showcase what a book looks like.
+Check out the [User Guide](https://preqc-pack.biosolver.org) for a list of features and installation and usage information.
 
-If you are interested in contributing to the development of mdBook, check out the Contribution Guide.
+If you are interested in contributing to the development of `preqc-pack`, check out the Contribution Guide.
 
 ## Why PreQC Pack?
 Traditional solutions require multiple software combinations to calculate indicators for quality pre-evaluation, which is costly and time-consuming. Whether it is possible to develop a low-cost and low-resource-consumption software to generate the required pre-evaluation indicators at one time? So we develop the preqc-pack.
