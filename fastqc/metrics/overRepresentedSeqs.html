@@ -1,0 +1,223 @@
+<!DOCTYPE HTML>
+<html lang="en" class="sidebar-visible no-js light">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Overrepresented Sequences - PreQC Pack: A quality control tool for high throughput sequence data.</title>
+        <!-- Custom HTML head -->
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff" />
+
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../../highlight.css">
+        <link rel="stylesheet" href="../../tomorrow-night.css">
+        <link rel="stylesheet" href="../../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+    </head>
+    <body>
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('no-js')
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add('js');
+        </script>
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var html = document.querySelector('html');
+            var sidebar = 'hidden';
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            }
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../../intro.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../../checksum.html"><strong aria-hidden="true">2.</strong> Checksum</a></li><li class="chapter-item expanded "><a href="../../fastqc.html"><strong aria-hidden="true">3.</strong> FastQC</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../../fastqc/metrics/basicStats.html"><strong aria-hidden="true">3.1.</strong> Basic Statistics</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perBaseSeqQuality.html"><strong aria-hidden="true">3.2.</strong> Per Base Sequence Quality</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perSeqQualityScore.html"><strong aria-hidden="true">3.3.</strong> Per Sequence Quality Score</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perBaseSeqContent.html"><strong aria-hidden="true">3.4.</strong> Per Base Sequence Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perSeqGCContent.html"><strong aria-hidden="true">3.5.</strong> Per Sequence GC Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perBaseNContent.html"><strong aria-hidden="true">3.6.</strong> Per Base N Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/seqLenDistribution.html"><strong aria-hidden="true">3.7.</strong> Sequence Length Distribution</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/overRepresentedSeqs.html" class="active"><strong aria-hidden="true">3.8.</strong> Overrepresented Sequences</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/seqDuplicationLevel.html"><strong aria-hidden="true">3.9.</strong> Duplicate Sequences</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/adapterContent.html"><strong aria-hidden="true">3.10.</strong> Adapter Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/kmerContent.html"><strong aria-hidden="true">3.11.</strong> Kmer Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perTileQualityScore.html"><strong aria-hidden="true">3.12.</strong> Per Tile Sequence Quality</a></li></ol></li><li class="chapter-item expanded "><a href="../../mislabeling.html"><strong aria-hidden="true">4.</strong> Mislabeling</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky bordered">
+                    <div class="left-buttons">
+                        <button id="sidebar-toggle" class="icon-button" type="button" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </button>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">PreQC Pack: A quality control tool for high throughput sequence data.</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="overrepresented-sequences"><a class="header" href="#overrepresented-sequences"><a href="https://www.bioinformatics.babraham.ac.uk/projects/fastqc/Help/3%20Analysis%20Modules/9%20Overrepresented%20Sequences.html"> Overrepresented Sequences</a></a></h1>
+<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
+<p>A normal high-throughput library will contain a diverse set of sequences, with no individual sequence making up a tiny fraction of the whole. Finding that a single sequence is very overrepresented in the set either means that it is highly biologically significant, or indicates that the library is contaminated, or not as diverse as you expected.</p>
+<p>This module lists all of the sequence which make up more than 0.1% of the total. To conserve memory only sequences which appear in the first 100,000 sequences are tracked to the end of the file. It is therefore possible that a sequence which is overrepresented but doesn't appear at the start of the file for some reason could be missed by this module.</p>
+<p>For each overrepresented sequence the program will look for matches in a database of common contaminants and will report the best hit it finds. Hits must be at least 20bp in length and have no more than 1 mismatch. Finding a hit doesn't necessarily mean that this is the source of the contamination, but may point you in the right direction. It's also worth pointing out that many adapter sequences are very similar to each other so you may get a hit reported which isn't technically correct, but which has very similar sequence to the actual match.</p>
+<p>Because the duplication detection requires an exact sequence match over the whole length of the sequence any reads over 75bp in length are truncated to 50bp for the purposes of this analysis. Even so, longer reads are more likely to contain sequencing errors which will artificially increase the observed diversity and will tend to underrepresent highly duplicated sequences.</p>
+<ul>
+<li><strong>count</strong>：Total number of  sequences in the file.</li>
+<li><strong>Obervation cut off</strong>：The number of unique sequences we want to track in overrepresented module.</li>
+<li><strong>Unique sequence count</strong>：The number of unique sequences at present.</li>
+<li><strong>Count at unique limit</strong>： The corresponding <code>count</code> that has been processed when <code>unique sequence count</code>  reaches the <code>obervation cut off</code>.</li>
+<li><strong>Overrepresented sequences</strong> : It's a set of overrepresented  sequence with attributes &quot;seq&quot;，“count”，&quot;percentage&quot; and contaminant hit&quot;, where &quot;seq&quot; is stand for a sequence of bases， “count” is stand for  the number of sentences containing such base sequence, &quot;percentage&quot; is stand for the proportion of &quot;count&quot; in total count, and contaminant hit is stand for the hit results in file of comtaminant .</li>
+</ul>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<pre><code>&quot;overrepresented_seqs&quot;: {
+            &quot;count&quot;: 250000,
+            &quot;observation_cut_off&quot;: 100000,
+            &quot;unique_seq_count&quot;: 100000,
+            &quot;count_at_unique_limit&quot;: 140053,
+            &quot;overrepresented_seqs&quot;: [
+                {
+                    &quot;seq&quot;: &quot;GTGGCTATTCACAGGCGCGATCCCACTACTGATCAGCACGGGAGTTTTGA&quot;,
+                    &quot;count&quot;: 1941,
+                    &quot;percentage&quot;: 0.7764,
+                    &quot;contaminant_hit&quot;: null
+                },
+                {
+                    &quot;seq&quot;: &quot;GCAGTGGCTATTCACAGGCGCGATCCCACTACTGATCAGCACGGGAGTTT&quot;,
+                    &quot;count&quot;: 1347,
+                    &quot;percentage&quot;: 0.5388000000000001,
+                    &quot;contaminant_hit&quot;: null
+                },
+                {
+                    &quot;seq&quot;: &quot;AGTGGCTATTCACAGGCGCGATCCCACTACTGATCAGCACGGGAGTTTTG&quot;,
+                    &quot;count&quot;: 1291,
+                    &quot;percentage&quot;: 0.5164,
+                    &quot;contaminant_hit&quot;: null
+                },
+                {
+                    &quot;seq&quot;: &quot;GTGCAGTGGCTATTCACAGGCGCGATCCCACTACTGATCAGCACGGGAGT&quot;,
+                    &quot;count&quot;: 916,
+                    &quot;percentage&quot;: 0.3664,
+                    &quot;contaminant_hit&quot;: null
+                },
+                ...
+            ]
+        },
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../fastqc/metrics/seqLenDistribution.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+                            <a rel="next" href="../../fastqc/metrics/seqDuplicationLevel.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../fastqc/metrics/seqLenDistribution.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+                    <a rel="next" href="../../fastqc/metrics/seqDuplicationLevel.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
+
+        <!-- Custom JS scripts -->
+    </body>
+</html>

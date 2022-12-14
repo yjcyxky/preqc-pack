@@ -1,0 +1,217 @@
+<!DOCTYPE HTML>
+<html lang="en" class="sidebar-visible no-js light">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Basic Statistics - PreQC Pack: A quality control tool for high throughput sequence data.</title>
+        <!-- Custom HTML head -->
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff" />
+
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../../highlight.css">
+        <link rel="stylesheet" href="../../tomorrow-night.css">
+        <link rel="stylesheet" href="../../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+    </head>
+    <body>
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('no-js')
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add('js');
+        </script>
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var html = document.querySelector('html');
+            var sidebar = 'hidden';
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            }
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../../intro.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../../checksum.html"><strong aria-hidden="true">2.</strong> Checksum</a></li><li class="chapter-item expanded "><a href="../../fastqc.html"><strong aria-hidden="true">3.</strong> FastQC</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../../fastqc/metrics/basicStats.html" class="active"><strong aria-hidden="true">3.1.</strong> Basic Statistics</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perBaseSeqQuality.html"><strong aria-hidden="true">3.2.</strong> Per Base Sequence Quality</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perSeqQualityScore.html"><strong aria-hidden="true">3.3.</strong> Per Sequence Quality Score</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perBaseSeqContent.html"><strong aria-hidden="true">3.4.</strong> Per Base Sequence Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perSeqGCContent.html"><strong aria-hidden="true">3.5.</strong> Per Sequence GC Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perBaseNContent.html"><strong aria-hidden="true">3.6.</strong> Per Base N Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/seqLenDistribution.html"><strong aria-hidden="true">3.7.</strong> Sequence Length Distribution</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/overRepresentedSeqs.html"><strong aria-hidden="true">3.8.</strong> Overrepresented Sequences</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/seqDuplicationLevel.html"><strong aria-hidden="true">3.9.</strong> Duplicate Sequences</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/adapterContent.html"><strong aria-hidden="true">3.10.</strong> Adapter Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/kmerContent.html"><strong aria-hidden="true">3.11.</strong> Kmer Content</a></li><li class="chapter-item expanded "><a href="../../fastqc/metrics/perTileQualityScore.html"><strong aria-hidden="true">3.12.</strong> Per Tile Sequence Quality</a></li></ol></li><li class="chapter-item expanded "><a href="../../mislabeling.html"><strong aria-hidden="true">4.</strong> Mislabeling</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky bordered">
+                    <div class="left-buttons">
+                        <button id="sidebar-toggle" class="icon-button" type="button" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </button>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">PreQC Pack: A quality control tool for high throughput sequence data.</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="basic-statistics"><a class="header" href="#basic-statistics"><a href="https://www.bioinformatics.babraham.ac.uk/projects/fastqc/Help/3%20Analysis%20Modules/1%20Basic%20Statistics.html">Basic Statistics</a></a></h1>
+<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
+<p>The Basic Statistics module generates some simple composition statistics for the file analysed.</p>
+<ul>
+<li><strong>File Name</strong>：The original filename of the file which was analysed</li>
+<li><strong>File type</strong>：Says whether the file appeared to contain actual base calls or colorspace data which had to be converted to base calls</li>
+<li><strong>Phred Encoding</strong>：Says which ASCII encoding of quality values was found in this file.</li>
+<li><strong>Total Reads</strong>：A count of the total number of sequences processed. </li>
+<li><strong>Total Bases</strong>：A count of the total number of bases in all sequences processed. </li>
+<li><strong>Total T Bases</strong>：A count of the total number of base 'T' in all sequences processed. </li>
+<li><strong>Total C Bases</strong>：A count of the total number of base 'C' in all sequences processed. </li>
+<li><strong>Total G Bases</strong>：A count of the total number of base 'G' in all sequences processed. </li>
+<li><strong>Total A Bases</strong>：A count of the total number of base 'A' in all sequences processed. </li>
+<li><strong>Total N Bases</strong>： A count of the total number of base 'N' in all sequences processed , where 'N' is the base that cannot be recognized by sequencing. </li>
+<li><strong>%GC</strong>：The overall %GC of all bases in all sequences</li>
+<li><strong>Min Length</strong>：The length of the shortest sequence in the set.</li>
+<li><strong>Max Length</strong>：The length of the highest sequence in the set.</li>
+<li><strong>Lowest Char:</strong> The lowest quality char in all sequences processed. </li>
+<li><strong>Highest Char:</strong> The highest quality char in all sequences processed. </li>
+</ul>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<pre><code>&quot;basic_stats&quot;：{
+            &quot;file_name&quot;：&quot;test.fastq.gz&quot;,
+            &quot;file_type&quot;：&quot;&quot;,
+            &quot;phred&quot;：{
+                &quot;name&quot;：&quot;Sanger / Illumina 1.9&quot;,
+                &quot;offset&quot;：33
+            },
+            &quot;total_reads&quot;：250000,
+            &quot;total_bases&quot;：37500000,
+            &quot;t_count&quot;：8473918,
+            &quot;c_count&quot;：10050719,
+            &quot;g_count&quot;：9888266,
+            &quot;a_count&quot;：9086549,
+            &quot;n_count&quot;：548,
+            &quot;gc_percentage&quot;：0.5317062666666666,
+            &quot;min_length&quot;：150,
+            &quot;max_length&quot;：150,
+            &quot;lowest_char&quot;：35,
+            &quot;highest_char&quot;：70
+        },
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../fastqc.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+                            <a rel="next" href="../../fastqc/metrics/perBaseSeqQuality.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../fastqc.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+                    <a rel="next" href="../../fastqc/metrics/perBaseSeqQuality.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
+
+        <!-- Custom JS scripts -->
+    </body>
+</html>
