@@ -42,14 +42,6 @@ impl QualityCount {
         };
     }
 
-    pub fn merge(&mut self, other: &QualityCount) {
-        self.total_counts += other.total_counts;
-
-        for i in 0..150 {
-            self.actual_counts[i] += other.actual_counts[i];
-        }
-    }
-
     pub fn add_value(&mut self, c_ascii: usize) {
         self.total_counts += 1;
         self.actual_counts[c_ascii] += 1;
@@ -60,6 +52,14 @@ impl QualityCount {
         self.actual_counts = (0..self.actual_counts.len())
             .map(|i| self.actual_counts[i] + quality_count.actual_counts[i])
             .collect();
+    }
+
+    pub fn calculate_q_count(&self, q_value: usize) -> usize {
+        let mut q_count = 0;
+        for i in q_value..150 {
+            q_count += self.actual_counts[i];
+        }
+        return q_count;
     }
 
     pub fn total_counts(&self) -> usize {
@@ -492,6 +492,14 @@ impl PerBaseSeqQuality {
     }
 
     pub fn add_quality_counts(&mut self, quality_counts: &Vec<QualityCount>) {
+        let self_len = self.quality_counts.len();
+        let other_len = quality_counts.len();
+        if self_len < other_len {
+            for _ in self_len..other_len {
+                self.quality_counts.push(QualityCount::new());
+            }
+        }
+
         for i in 0..self.quality_counts.len() {
             self.quality_counts[i].add_quality_count(&quality_counts[i]);
         }
@@ -515,6 +523,10 @@ pub struct BasicStats {
     phred: PhredEncoding,
     total_reads: usize,
     total_bases: usize,
+    q20_bases: usize,
+    q30_bases: usize,
+    q40_bases: usize,
+    q50_bases: usize,
     t_count: usize,
     c_count: usize,
     g_count: usize,
@@ -525,6 +537,7 @@ pub struct BasicStats {
     max_length: usize,
     lowest_char: usize,
     highest_char: usize,
+    quality_count: QualityCount,
 }
 
 impl BasicStats {
@@ -533,6 +546,10 @@ impl BasicStats {
             file_name: "".to_string(),
             total_reads: 0,
             total_bases: 0,
+            q20_bases: 0,
+            q30_bases: 0,
+            q40_bases: 0,
+            q50_bases: 0,
             t_count: 0,
             c_count: 0,
             g_count: 0,
@@ -546,10 +563,25 @@ impl BasicStats {
             min_length: 1000,
             max_length: 0,
             phred: PhredEncoding::new("", 0),
+            quality_count: QualityCount::new(),
         };
     }
 
     pub fn process_sequence(&mut self, record: &impl Record) {
+        let qual = record.qual();
+        for i in 0..qual.len() {
+            self.quality_count.add_value(qual[i] as usize);
+
+            let num = qual[i] as usize;
+            if self.lowest_char > num {
+                self.lowest_char = num;
+            }
+
+            if self.highest_char < num {
+                self.highest_char = num;
+            }
+        }
+
         let mut seq_len = 0;
         for base in record.seq() {
             let base_char = *base as char;
@@ -579,7 +611,6 @@ impl BasicStats {
             }
         }
 
-        self.update_highest_lowest_char(&record.qual());
         self.total_bases += seq_len;
         self.total_reads += 1;
 
@@ -592,19 +623,6 @@ impl BasicStats {
             }
             if seq_len > self.max_length {
                 self.max_length = seq_len;
-            }
-        }
-    }
-
-    pub fn update_highest_lowest_char(&mut self, qual: &[u8]) {
-        for c in qual {
-            let num = c.clone() as usize;
-            if self.lowest_char > num {
-                self.lowest_char = num;
-            }
-
-            if self.highest_char < num {
-                self.highest_char = num;
             }
         }
     }
@@ -681,13 +699,26 @@ impl BasicStats {
         self.gc_percentage = (self.g_count + self.c_count) as f64 / self.total_bases as f64;
     }
 
+    fn set_q_score(&mut self) {
+        let q20_boundary = self.phred.offset + 20;
+        let q30_boundary = self.phred.offset + 30;
+        let q40_boundary = self.phred.offset + 40;
+        let q50_boundary = self.phred.offset + 50;
+        self.q20_bases = self.quality_count.calculate_q_count(q20_boundary);
+        self.q30_bases = self.quality_count.calculate_q_count(q30_boundary);
+        self.q40_bases = self.quality_count.calculate_q_count(q40_boundary);
+        self.q50_bases = self.quality_count.calculate_q_count(q50_boundary);
+    }
+
     /// Some data values should be calculated after all sequences have been processed
     fn finish(&mut self) {
         self.set_phred();
         self.set_gc_percentage();
+        self.set_q_score();
     }
 
     pub fn merge(&mut self, other: &BasicStats) {
+        self.quality_count.add_quality_count(&other.quality_count);
         self.total_reads += other.total_reads;
         self.total_bases += other.total_bases;
         self.t_count += other.t_count;
@@ -3097,7 +3128,7 @@ impl PerTileQualityScore {
             } else {
                 let mut current_quality_counts = self.per_tile_quality_counts[&other_tile].clone();
                 for pos in 0..self.current_length {
-                    current_quality_counts[pos].merge(&other_quality_count[pos]);
+                    current_quality_counts[pos].add_quality_count(&other_quality_count[pos]);
                 }
                 self.per_tile_quality_counts
                     .insert(other_tile.clone(), current_quality_counts);
