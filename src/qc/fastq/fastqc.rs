@@ -334,7 +334,7 @@ impl PhredEncoding {
 
     pub fn convert_old_illumina_phred_to_probability(phred: usize) -> f64 {
         let base_10 = 10.0_f64;
-        return base_10.powf((phred as f64 / phred as f64 + 1.0) / -10.0);
+        base_10.powf((phred as f64 / (phred as f64 + 1.0)) / -10.0)
     }
 
     pub fn convert_probability_to_sanger_phred(p: f64) -> usize {
@@ -747,15 +747,15 @@ pub struct PerSeqQualityScore {
 }
 
 impl PerSeqQualityScore {
-    fn new() -> PerSeqQualityScore {
-        return PerSeqQualityScore {
+    fn new() -> Self {
+        Self {
             average_score_counts: HashMap::new(),
             y_category_count: vec![],
             x_category_quality: vec![],
             max_counts: 0,
             most_frequent_score: 0,
             lowest_char: 126,
-        };
+        }
     }
 
     // analysis the average quality scores for a sequence and update the average_score_counts

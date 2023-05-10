@@ -8,24 +8,40 @@ version = "0.2.1"
 
 [dependencies]
 anyhow = "1.0.2"
+bit-vec = "0.6.3"
 blake2 = "0.9"
+openssl = {version = "0.10", features = ["vendored"]}
 # hashbrown = { version = "0.12", features = ["serde"] }
+bwa = {git = "https://github.com/yjcyxky/rust-bwa", rev = "360ff84"}
+# concurrent hash map
+chashmap-serde = "2.2.3"
 digest = "0.9.0"
+executor-service = {git = "https://github.com/yerlibilgin/executor-service.git"}
 exitcode = "1.1.2"
 fastq = "0.6.0"
 futures = "0.3.5"
 lazy_static = "1.4.0"
+linear-map = "1.2.0"
 log = "0.4.11"
+maplit = "1.0.2"
+math = "0.10.0"
 md-5 = "0.9.1"
 probability = "0.19.1"
 regex = "1.3.9"
-serde = { version = "1.0.59", features = ["derive"] }
+rust-htslib = "0.40.2"
+serde = {version = "1.0.59", features = ["derive"]}
 serde_json = "1.0.59"
 stderrlog = "0.5.4"
 structopt = "0.3.17"
-bwa = { git = "https://github.com/yjcyxky/rust-bwa", rev = "360ff84" }
+time = "0.3.20"
 
 [profile.release]
 debug = false
 lto = true
 opt-level = 3
+
+[dev-dependencies]
+criterion = {version = "0.4", features = ["html_reports"]}
+[[bench]]
+harness = false
+name = "my_benchmark"

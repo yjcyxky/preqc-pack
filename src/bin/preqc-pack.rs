@@ -5,7 +5,7 @@ extern crate structopt;
 mod cmd;
 
 use cmd::merge;
-use cmd::metrics;
+use cmd::metrics::{bam_metrics, fastq_metrics};
 use structopt::StructOpt;
 
 /// A suite of qc programs for interacting with fastq/bam/vcf/exp file
@@ -22,19 +22,35 @@ struct Opt {
     verbose: usize,
 
     /// Timestamp (sec, ms, ns, none)
-    #[structopt(short = "t", long = "timestamp")]
+    #[structopt(short = "t", long = "timestamp")] // Option makes it optional
     ts: Option<stderrlog::Timestamp>,
 
-    #[structopt(subcommand)]
+    #[structopt(subcommand)] // Note that we mark a field as a subcommand
     cmd: SubCommands,
 }
 
 #[derive(Debug, PartialEq, StructOpt)]
 enum SubCommands {
     #[structopt(name = "metrics")]
-    Meta(metrics::Arguments),
+    Meta(Metrics),
     #[structopt(name = "merge")]
     Merge(merge::Arguments),
+}
+
+/// Run qc at different stages, such as fastq, bam, vcf
+#[derive(Debug, PartialEq, StructOpt)]
+#[structopt(setting=structopt::clap::AppSettings::ColoredHelp)]
+struct Metrics {
+    #[structopt(subcommand)]
+    metrics_type: MetricsType,
+}
+
+#[derive(Debug, PartialEq, StructOpt)]
+enum MetricsType {
+    #[structopt(name = "fastq")]
+    Fastq(fastq_metrics::Arguments),
+    #[structopt(name = "bam")]
+    Bam(bam_metrics::Arguments),
 }
 
 fn main() {
@@ -50,8 +66,16 @@ fn main() {
         .unwrap();
 
     match opt.cmd {
-        SubCommands::Meta(arguments) => {
-            metrics::run(&arguments);
+        SubCommands::Meta(metrics) => {
+            // metrics::run(&arguments);
+            match metrics.metrics_type {
+                MetricsType::Fastq(arguments) => {
+                    fastq_metrics::run(&arguments);
+                }
+                MetricsType::Bam(arguments) => {
+                    bam_metrics::run(&arguments);
+                }
+            }
         }
         SubCommands::Merge(arguments) => {
             merge::run(&arguments);
