@@ -1,5 +1,6 @@
 use log::*;
-use preqc_pack::qc::{self, FastQCConfig, MislabelingConfig};
+use preqc_pack::qc::fastq::{fastqc,hasher,mislabeling};
+use preqc_pack::qc::config::fastq_config::{ FastQCConfig, MislabelingConfig, QCResults};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -8,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use std::thread;
 
-const PATTERN_FILE: &[u8] = include_bytes!("../../../data/patterns.json");
-const ADAPTER_LIST: &[u8] = include_bytes!("../../../data/adapter_list.txt");
-const CONTAMINANT_LIST: &[u8] = include_bytes!("../../../data/contaminant_list.txt");
+const PATTERN_FILE: &[u8] = include_bytes!("../../../../data/patterns.json");
+const ADAPTER_LIST: &[u8] = include_bytes!("../../../../data/adapter_list.txt");
+const CONTAMINANT_LIST: &[u8] = include_bytes!("../../../../data/contaminant_list.txt");
 
-/// A collection of qc metrics, such as file size, md5sum, fastqc, checkmate
+/// A collection of fastq qc metrics, such as file size, md5sum, fastqc, checkmate.Run fastq -h for more usage.
 #[derive(StructOpt, PartialEq, Debug)]
 #[structopt(
     setting=structopt::clap::AppSettings::ColoredHelp, 
@@ -99,36 +100,27 @@ pub struct MetricsConfig {
 }
 
 impl MetricsConfig {
-    pub fn new(which: &str, algorithm: &str, nthreads: usize, pattern_file: &str, contaminant_file: &str, adapter_file: &str, overrepresented_musc: usize, kmer_isi: usize, tile_csb: usize, tile_isi: usize) -> MetricsConfig {
-        info!("Started reading patternfile");
-        let (patterns, indexes, count) = if pattern_file.len() > 0 {
-            qc::mislabeling::VAFMatrix::read_patterns(pattern_file)
-        } else {
-            qc::mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
-        };
+    pub fn new(args: &Arguments ) -> MetricsConfig {
+        let fastqc_config = MetricsConfig::construct_fastqc_config(&args.contaminant_file, &args.adapter_file, args.overrepresented_musc, args.kmer_isi, args.tile_csb, args.tile_isi);
+        let mislabeling_config = MetricsConfig::construct_mislabeling_config(&args.pattern_file);
 
-        info!("Finished reading patternfile");
+        MetricsConfig { nthreads:args.nthreads, which: args.which.clone(), algorithm: args.algorithm.clone(), fastqc_config, mislabeling_config }
+    }
 
-        let mut count_vec: Vec<Option<usize>> = vec![None; count];
-        for i in indexes {
-            count_vec[i] = Some(0);
-        }
-
-        info!("Finished building count array");
-
+    pub fn construct_fastqc_config( contaminant_file: &str, adapter_file: &str, overrepresented_musc: usize, kmer_isi: usize, tile_csb: usize, tile_isi: usize) ->FastQCConfig {
         info!("Started reading contaminants file");
         let contaminants = if contaminant_file.len() > 0 {
-            qc::fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file)
+            fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file)
         } else {
-            qc::fastqc::OverRepresentedSeqs::read_contaminants_list(CONTAMINANT_LIST)
+            fastqc::OverRepresentedSeqs::read_contaminants_list(CONTAMINANT_LIST)
         };
         info!("Finished reading contaminants file");
 
         info!("Started reading adapter file");
         let adapters = if adapter_file.len() > 0 {
-            qc::fastqc::AdapterContent::read_adapter_file(adapter_file)
+            fastqc::AdapterContent::read_adapter_file(adapter_file)
         } else {
-            qc::fastqc::AdapterContent::read_adapter_list(ADAPTER_LIST)
+            fastqc::AdapterContent::read_adapter_list(ADAPTER_LIST)
         };
         info!("Finished reading adapter file");
 
@@ -156,37 +148,46 @@ impl MetricsConfig {
             Some(tile_isi)
         };
 
-        let fastqc_config = qc::FastQCConfig::new(
+        FastQCConfig::new(
             adapters,
             contaminants,
             overrepresented_max_unique_seq_count,
             kmer_ignore_sampling_interval,
             tile_continuous_sampling_boundary,
             tile_ignore_sampling_interval,
-        );
+        )
+    }
 
-        let mislabeling_config = qc::MislabelingConfig::new(patterns, count_vec, count);
+    pub fn construct_mislabeling_config( pattern_file: &str) ->MislabelingConfig {
+        info!("Started reading patternfile");
+        let (patterns, indexes, count) = if pattern_file.len() > 0 {
+            mislabeling::VAFMatrix::read_patterns(pattern_file)
+        } else {
+            mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
+        };
 
-        MetricsConfig { nthreads, which: which.to_string(), algorithm: algorithm.to_string(), fastqc_config, mislabeling_config }
-    
+        info!("Finished reading patternfile");
+
+        let mut count_vec: Vec<Option<usize>> = vec![None; count];
+        for i in indexes {
+            count_vec[i] = Some(0);
+        }
+
+        info!("Finished building count array");
+
+        MislabelingConfig::new(patterns, count_vec, count)
     }
 }
 
 pub fn run(args: &Arguments) {
+    if args.input.len() == 0 {
+        error!("The input file should not be null.");
+        return;
+    }
+
     info!("Run with {:?} threads", args.nthreads);
     if Path::new(&args.output).is_dir() || &args.output == "" {
-        let config = MetricsConfig::new(
-            &args.which, 
-            &args.algorithm, 
-            args.nthreads, 
-            &args.pattern_file, 
-            &args.contaminant_file, 
-            &args.adapter_file, 
-            args.overrepresented_musc, 
-            args.kmer_isi, 
-            args.tile_csb, 
-            args.tile_isi
-        );
+        let config = MetricsConfig::new(args);
 
         if args.input.len() > 1 {
             let inputs = args.input.to_owned();
@@ -207,20 +208,22 @@ pub fn run(args: &Arguments) {
             for handle in handles {
                 handle.join().unwrap();
             }
-        } else {
+        } else  {
             run_with_args(&args.input[0], &args.output, &config)
-        }
+        } 
     } else {
         error!("The output ({:?}) need to be a directory.", &args.output);
     }
 }
 
 pub fn run_with_args(input: &str, output: &str, config: &MetricsConfig) {
+
+
     let results = if Path::new(input).exists() {
         // TODO: Multi threads?
         if config.which == "checksum" {
             info!("Run checksum on {:?}...", input);
-            let md5sum = qc::hasher::checksum(input, &config.algorithm);
+            let md5sum = hasher::checksum(input, &config.algorithm);
             format!("{}", serde_json::to_string(&md5sum).unwrap())
         } else {
             if config.which == "fastqc" {
@@ -232,7 +235,7 @@ pub fn run_with_args(input: &str, output: &str, config: &MetricsConfig) {
             }
 
             let mut qc = if config.nthreads == 1 {
-                qc::QCResults::run_qc(
+                QCResults::run_qc(
                     input,
                     &config.which,
                     &config.fastqc_config,
@@ -244,7 +247,7 @@ pub fn run_with_args(input: &str, output: &str, config: &MetricsConfig) {
                 let fastqc_config_arc = Arc::new(config.fastqc_config.clone());
                 let mislabeling_config_arc = Arc::new(config.mislabeling_config.clone());
 
-                qc::QCResults::run_qc_par(
+                QCResults::run_qc_par(
                     input,
                     config.nthreads,
                     which,
@@ -256,7 +259,7 @@ pub fn run_with_args(input: &str, output: &str, config: &MetricsConfig) {
             if config.which != "all" {
                 format!("{}", serde_json::to_string(&qc).unwrap())
             } else {
-                qc.set_filemeta(Some(qc::hasher::checksum(input, &config.algorithm)));
+                qc.set_filemeta(Some(hasher::checksum(input, &config.algorithm)));
                 format!("{}", serde_json::to_string(&qc).unwrap())
             }
         }
