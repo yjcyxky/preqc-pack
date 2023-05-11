@@ -1,4 +1,4 @@
-use crate::qc::config::bam_config::Constants;
+use crate::qc::config::bam_config::{Constants, QualimapConfig};
 use bit_vec::BitVec;
 use chashmap_serde::CHashMap;
 use executor_service::{ExecutorService, Executors, Future};
@@ -3625,7 +3625,37 @@ impl BamStatsAnalysis {
     pub const HUMAN_GENOME_NAME: &str = "human";
     pub const MOUSE_GENOME_NAME: &str = "mouse";
 
-    pub fn new(_bam_file: String) -> Self {
+    pub fn new(_bam_file: String, qualimap_config: &QualimapConfig) -> Self {
+        let thread_num = qualimap_config.get_thread_num();
+        let window_num = qualimap_config.get_window_num();
+        let bun_size = qualimap_config.get_bunch_size();
+        let min_homopolymer_size = qualimap_config.get_min_homopolymer_size();
+        let _feature_file = qualimap_config.get_feature_file();
+        let outside_analyze_flag = qualimap_config.get_outside_region_analyze_flag();
+        let lib_protocal = qualimap_config.get_lib_protocol();
+
+        let overlap_analyze_flag = qualimap_config.get_collect_overlap_flag();
+
+        let skip_dup_flag = qualimap_config.get_skip_duplicate_flag();
+        let skip_dup_mode = qualimap_config.get_skip_duplicate_mode();
+        let mut _skip_marked_duplicates_flag = false;
+        let mut _skip_detected_duplicates_flag = false;
+
+        if skip_dup_flag {
+            if skip_dup_mode == "flagged" {
+                _skip_detected_duplicates_flag = true;
+            } else if skip_dup_mode == "estimated" {
+                _skip_marked_duplicates_flag = true;
+            } else if skip_dup_mode == "both" {
+                _skip_detected_duplicates_flag = true;
+                _skip_marked_duplicates_flag = true;
+            }
+        }
+
+        let mut _selected_regions_available_flag = false;
+        if !_feature_file.is_empty() {
+            _selected_regions_available_flag = true;
+        }
         Self {
             bam_file: _bam_file,
             // reference
@@ -3636,7 +3666,7 @@ impl BamStatsAnalysis {
             number_of_reference_config: 0,
 
             // currentWindow management
-            number_of_windows: Constants::DEFAULT_NUMBER_OF_WINDOWS,
+            number_of_windows: window_num as i32,
             effective_number_of_window: 0,
             window_size: 0,
 
@@ -3660,27 +3690,27 @@ impl BamStatsAnalysis {
             // working variables
             current_window: None,
             open_windows: HashMap::new(),
-            thread_number: 4,
-            num_reads_in_bunch: Constants::DEFAULT_CHUNK_SIZE,
+            thread_number: thread_num,
+            num_reads_in_bunch: bun_size as i32,
             progress: 0,
-            min_homopolymer_size: Constants::DEFAULT_HOMOPOLYMER_SIZE,
+            min_homopolymer_size: min_homopolymer_size as i32,
 
             // nucleotide reporting
             out_dir: ".".to_string(),
 
             // gff support
-            selected_regions_available_flag: false,
-            feature_file: "".to_string(),
+            selected_regions_available_flag: _selected_regions_available_flag,
+            feature_file: _feature_file,
             num_of_selected_regions: 0,
 
             // inside region analysis
             inside_reference_sizes: 0,
-            skip_marked_duplicates_flag: false,
-            skip_detected_duplicates_flag: false,
-            collect_intersecting_paired_end_reads_flag: false,
+            skip_marked_duplicates_flag: _skip_marked_duplicates_flag,
+            skip_detected_duplicates_flag: _skip_detected_duplicates_flag,
+            collect_intersecting_paired_end_reads_flag: overlap_analyze_flag,
 
             // outside region analysis
-            compute_outside_stats_flag: false,
+            compute_outside_stats_flag: outside_analyze_flag,
             current_outside_window: None,
             open_outside_windows: HashMap::new(),
             outside_bam_stats: None,
@@ -3694,7 +3724,7 @@ impl BamStatsAnalysis {
             selected_region_starts: vec![],
             selected_region_ends: vec![],
             region_overlap_lookup_table: RegionOverlapLookupTable::new(),
-            protocol: LibraryProtocol::NonStrandSpecific,
+            protocol: LibraryProtocol::get_protocol_by_name(lib_protocal),
 
             bam_stats_collector: BamStatsCollector::new(),
             outside_bam_stats_collector: BamStatsCollector::new(),
@@ -5484,8 +5514,9 @@ impl Qualimap {
         }
     }
 
-    pub fn run(&mut self, bam_file: String) {
-        let mut bam_stats_analysis = BamStatsAnalysis::new(bam_file);
+    pub fn run(&mut self, bam_file: &str, qualimap_config: &QualimapConfig) {
+        let mut bam_stats_analysis = BamStatsAnalysis::new(bam_file.to_string(), qualimap_config);
+
         println!("Running BAM file analysis...");
         bam_stats_analysis.run();
         println!("End of bam qc");

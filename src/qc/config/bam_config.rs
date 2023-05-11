@@ -8,6 +8,8 @@ impl Constants {
     pub const DEFAULT_CHUNK_SIZE: i32 = 1000;
     pub const DEFAULT_HOMOPOLYMER_SIZE: i32 = 3;
     pub const DEFAULT_STABLIZED_WINDOW_PROPORTION: i32 = 500;
+    pub const DEFAULT_LIB_PROTOCOL: &'static str = "non-strand-specific";
+    pub const DEFAULT_SKIP_DUPLICATE_MODE: &'static str = "flagged";
 
     pub const GRAPHIC_TO_SAVE_WIDTH: i32 = 1024;
     pub const GRAPHIC_TO_SAVE_HEIGHT: i32 = 768;
@@ -76,18 +78,132 @@ impl Constants {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QualimapConfig {
+    // advanced options
     thread_num: usize,
     window_num: usize,
     bunch_size: usize,
+    min_homopolymer_size: usize,
+    // region analyze
+    feature_file: String,
+    outside_stats_flag: bool,
+    lib_protocol: String,
+    // overlap detection
+    collect_overlap_flag: bool,
+    // skip duplicates option
+    skip_dup_flag: bool,
+    skip_dup_mode: String,
+    // reference gc content
+    gc_genome: String,
 }
 
 impl QualimapConfig {
-    pub fn new(_thread_num: usize, _window_num: usize, _bunch_size: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            thread_num: _thread_num,
-            window_num: _window_num,
-            bunch_size: _bunch_size,
+            // advanced options
+            thread_num: 1,
+            window_num: Constants::DEFAULT_NUMBER_OF_WINDOWS as usize,
+            bunch_size: Constants::DEFAULT_CHUNK_SIZE as usize,
+            min_homopolymer_size: Constants::DEFAULT_HOMOPOLYMER_SIZE as usize,
+            // region analyze
+            feature_file: "".to_string(),
+            outside_stats_flag: false,
+            lib_protocol: Constants::DEFAULT_LIB_PROTOCOL.to_string(),
+            // overlap detection
+            collect_overlap_flag: false,
+            // skip duplicates option
+            skip_dup_flag: false,
+            skip_dup_mode: Constants::DEFAULT_SKIP_DUPLICATE_MODE.to_string(),
+            // reference gc content
+            gc_genome: "".to_string(),
         }
+    }
+
+    pub fn set_thread_num(&mut self, nthreads: usize) {
+        self.thread_num = nthreads;
+    }
+
+    pub fn get_thread_num(&self) -> usize {
+        self.thread_num
+    }
+
+    pub fn set_window_num(&mut self, nwindows: usize) {
+        self.window_num = nwindows;
+    }
+
+    pub fn get_window_num(&self) -> usize {
+        self.window_num
+    }
+
+    pub fn set_bunch_size(&mut self, bunch_size: usize) {
+        self.bunch_size = bunch_size;
+    }
+
+    pub fn get_bunch_size(&self) -> usize {
+        self.bunch_size
+    }
+
+    pub fn set_min_homopolymer_size(&mut self, min_homopoly: usize) {
+        self.min_homopolymer_size = min_homopoly;
+    }
+
+    pub fn get_min_homopolymer_size(&self) -> usize {
+        self.min_homopolymer_size
+    }
+
+    pub fn set_feature_file(&mut self, feature_file: String) {
+        self.feature_file = feature_file;
+    }
+
+    pub fn get_feature_file(&self) -> String {
+        self.feature_file.clone()
+    }
+
+    pub fn set_outside_region_analyze_flag(&mut self, flag: bool) {
+        self.outside_stats_flag = flag;
+    }
+
+    pub fn get_outside_region_analyze_flag(&self) -> bool {
+        self.outside_stats_flag
+    }
+
+    pub fn set_lib_protocol(&mut self, protocol: String) {
+        self.lib_protocol = protocol.to_string();
+    }
+
+    pub fn get_lib_protocol(&self) -> &str {
+        &self.lib_protocol
+    }
+
+    pub fn set_collect_overlap_flag(&mut self, flag: bool) {
+        self.collect_overlap_flag = flag;
+    }
+
+    pub fn get_collect_overlap_flag(&self) -> bool {
+        self.collect_overlap_flag
+    }
+
+    pub fn set_skip_duplicate_flag(&mut self, flag: bool) {
+        self.skip_dup_flag = flag;
+    }
+
+    pub fn get_skip_duplicate_flag(&self) -> bool {
+        self.skip_dup_flag
+    }
+
+    pub fn set_skip_duplicate_mode(&mut self, mode: String) {
+        self.skip_dup_mode = mode;
+    }
+
+    pub fn get_skip_duplicate_mode(&self) -> &str {
+        &self.skip_dup_mode
+    }
+
+    pub fn set_gc_genome(&mut self, genome: String) {
+        self.gc_genome = genome;
+    }
+
+    pub fn get_gc_genome(&self) -> String {
+        self.gc_genome.clone()
     }
 }
 
@@ -109,7 +225,7 @@ impl QCResults {
 
         let mut qc = Qualimap::new();
         if which == "qualimap" || which == "all" {
-            qc.run(bam_path.to_string());
+            qc.run(bam_path, qualimap_config);
             result.qualimap = Some(qc);
         }
         if which == "fastqscreen" || which == "all" {

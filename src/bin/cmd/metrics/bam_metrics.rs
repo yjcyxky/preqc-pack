@@ -10,7 +10,7 @@ use structopt::StructOpt;
 use std::thread;
 
 
-/// A collection of bam metrics, such as fastq screen, qualimap. Run bam -h for more usage.
+/// A collection of bam qc metrics, such as fastq screen, qualimap. Run bam -h for more usage.
 #[derive(StructOpt, PartialEq, Debug)]
 #[structopt(
     setting=structopt::clap::AppSettings::ColoredHelp, 
@@ -28,12 +28,53 @@ pub struct Arguments {
     which: String,
 
     /// The number of green threads for each file.
-    #[structopt(name = "nthreads", short = "n", long = "nthreads", default_value = "1")]
+    #[structopt( short = "n", long = "nthreads", default_value = "1")]
     nthreads: usize,
 
     /// Output directory.
-    #[structopt(name = "output", short = "o", long = "output", default_value = "")]
+    #[structopt( short = "o", long = "output", default_value = "")]
     output: String,
+
+    /// [qualimap] Number of sample windows across the genome.
+    #[structopt(name = "nwindows", short = "s",long = "nw",  default_value = "400")]
+    nwindows:usize,
+
+    /// [qualimap] Number of reads analyzed in a chunk.
+    #[structopt(name = "nchunks", short = "c",long = "nc", default_value = "1000")]
+    nchunks:usize,
+
+    /// [qualimap]  Feature file with regions of interest in GFF/GTF or BED format.
+    #[structopt( short = "f",long = "gff",default_value ="")]
+    gff:String,
+
+    /// [qualimap]  Activate this option to collect statistics of overlapping paired-end reads.
+    #[structopt( short = "a",long = "collect-overlap-pairs")]
+    collect_overlap_flag:bool,
+
+    /// [qualimap]  Activate this option to skip duplicate alignments from the analysis.
+    #[structopt( short = "d",long = "skip-duplicated")]
+    skip_dup_flag: bool,
+
+    /// [qualimap]  Activate this option to report information for the regions outside.
+    #[structopt( short = "s",long = "outside-stats")]
+    outside_stats_flag:bool,
+
+    /// [qualimap]  Specific type of duplicated alignments to skip (if this option is activated).
+    #[structopt( short = "u",long = "skip-dup-mode",default_value = "flagged",possible_values=&["flagged", "estimated", "both"])]
+    skip_dup_mode:String,
+
+    /// [qualimap]  Species to compare with genome GC distribution.
+    #[structopt( short = "g",long = "genome-gc-distr",default_value = "",possible_values=&["","HUMAN(hg19)", "MOUSE(mm9)", "MOUSE(mm10)"])]
+    gc_genome:String,
+
+    /// [qualimap] Sequencing library protocol.
+    #[structopt( short = "p", long = "sequencing-protocol",default_value = "non-strand-specific",possible_values=&["non-strand-specific", "strand-specific-forward",  "strand-specific-reverse"] )]
+    protocol:String,
+
+    /// [qualimap] Minimum size for a homopolymer to be considered in indel analysis.
+    #[structopt(name = "min homopolymer size",short = "m",long = "hm",  default_value = "3")]
+    min_homopolymer_size:usize,
+
 
 }
 
@@ -45,22 +86,66 @@ pub struct MetricsConfig {
 }
 
 impl MetricsConfig {
-    pub fn new(_which: &str,_nthreads: usize) -> Self {
+    pub fn new(args: &Arguments ) -> Self {
+        let qualimap_config = MetricsConfig::construct_qualimap_config(args);
+
         Self {
-            which:_which.to_string(),
-            nthreads:_nthreads,
-            qualimap_config:QualimapConfig::new(0, 0, 0)
+            which:args.which.clone(),
+            nthreads:args.nthreads,
+            qualimap_config:qualimap_config
         }
+    }
+
+    pub fn construct_qualimap_config(args: &Arguments) ->QualimapConfig{
+        let thread_num = args.nthreads;
+        let window_num = args.nwindows;
+        let bun_size = args.nchunks;
+        let min_homopolymer_size = args.min_homopolymer_size;
+        let feature_file = args.gff.clone();
+        let outside_analyze_flag = args.outside_stats_flag;
+        let lib_protocal = args.protocol.clone();
+        let overlap_analyze_flag = args.collect_overlap_flag;
+        let skip_dup_flag = args.skip_dup_flag;
+        let skip_dup_mode = args.skip_dup_mode.clone();
+        let gc_genome = args.gc_genome.clone();
+        
+        let mut config =  QualimapConfig::new();
+        // set advanced options
+        config.set_thread_num(thread_num);
+        config.set_window_num(window_num);
+        config.set_bunch_size(bun_size);
+        config.set_min_homopolymer_size(min_homopolymer_size);
+
+        // set region analyze
+        if !feature_file.is_empty() {
+            config.set_feature_file(feature_file);
+            config.set_outside_region_analyze_flag(outside_analyze_flag)
+        }
+
+        // selt overlap detection flag
+        config.set_collect_overlap_flag(overlap_analyze_flag);
+
+        // set skip duplicates option
+        config.set_skip_duplicate_flag(skip_dup_flag);
+        config.set_skip_duplicate_mode(skip_dup_mode);
+
+        // set reference gc content
+        if !gc_genome.is_empty() {
+            config.set_gc_genome(gc_genome);
+        }
+        config
     }
 }
 
 pub fn run(args: &Arguments) {
+    if args.input.len() == 0 {
+        error!("The input file should not be null.");
+        return;
+    }
+
     info!("Run with {:?} threads", args.nthreads);
     if Path::new(&args.output).is_dir() || &args.output == "" {
-        let config = MetricsConfig::new(
-            &args.which, 
-            args.nthreads, 
-        );
+        let config = MetricsConfig::new(args);
 
         if args.input.len() > 1 {
             let inputs = args.input.to_owned();

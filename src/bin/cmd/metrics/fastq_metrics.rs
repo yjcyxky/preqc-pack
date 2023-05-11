@@ -100,23 +100,14 @@ pub struct MetricsConfig {
 }
 
 impl MetricsConfig {
-    pub fn new(which: &str, algorithm: &str, nthreads: usize, pattern_file: &str, contaminant_file: &str, adapter_file: &str, overrepresented_musc: usize, kmer_isi: usize, tile_csb: usize, tile_isi: usize) -> MetricsConfig {
-        info!("Started reading patternfile");
-        let (patterns, indexes, count) = if pattern_file.len() > 0 {
-            mislabeling::VAFMatrix::read_patterns(pattern_file)
-        } else {
-            mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
-        };
+    pub fn new(args: &Arguments ) -> MetricsConfig {
+        let fastqc_config = MetricsConfig::construct_fastqc_config(&args.contaminant_file, &args.adapter_file, args.overrepresented_musc, args.kmer_isi, args.tile_csb, args.tile_isi);
+        let mislabeling_config = MetricsConfig::construct_mislabeling_config(&args.pattern_file);
 
-        info!("Finished reading patternfile");
+        MetricsConfig { nthreads:args.nthreads, which: args.which.clone(), algorithm: args.algorithm.clone(), fastqc_config, mislabeling_config }
+    }
 
-        let mut count_vec: Vec<Option<usize>> = vec![None; count];
-        for i in indexes {
-            count_vec[i] = Some(0);
-        }
-
-        info!("Finished building count array");
-
+    pub fn construct_fastqc_config( contaminant_file: &str, adapter_file: &str, overrepresented_musc: usize, kmer_isi: usize, tile_csb: usize, tile_isi: usize) ->FastQCConfig {
         info!("Started reading contaminants file");
         let contaminants = if contaminant_file.len() > 0 {
             fastqc::OverRepresentedSeqs::read_contaminants_file(contaminant_file)
@@ -157,37 +148,46 @@ impl MetricsConfig {
             Some(tile_isi)
         };
 
-        let fastqc_config = FastQCConfig::new(
+        FastQCConfig::new(
             adapters,
             contaminants,
             overrepresented_max_unique_seq_count,
             kmer_ignore_sampling_interval,
             tile_continuous_sampling_boundary,
             tile_ignore_sampling_interval,
-        );
+        )
+    }
 
-        let mislabeling_config = MislabelingConfig::new(patterns, count_vec, count);
+    pub fn construct_mislabeling_config( pattern_file: &str) ->MislabelingConfig {
+        info!("Started reading patternfile");
+        let (patterns, indexes, count) = if pattern_file.len() > 0 {
+            mislabeling::VAFMatrix::read_patterns(pattern_file)
+        } else {
+            mislabeling::VAFMatrix::read_patterns_with_reader(PATTERN_FILE)
+        };
 
-        MetricsConfig { nthreads, which: which.to_string(), algorithm: algorithm.to_string(), fastqc_config, mislabeling_config }
-    
+        info!("Finished reading patternfile");
+
+        let mut count_vec: Vec<Option<usize>> = vec![None; count];
+        for i in indexes {
+            count_vec[i] = Some(0);
+        }
+
+        info!("Finished building count array");
+
+        MislabelingConfig::new(patterns, count_vec, count)
     }
 }
 
 pub fn run(args: &Arguments) {
+    if args.input.len() == 0 {
+        error!("The input file should not be null.");
+        return;
+    }
+
     info!("Run with {:?} threads", args.nthreads);
     if Path::new(&args.output).is_dir() || &args.output == "" {
-        let config = MetricsConfig::new(
-            &args.which, 
-            &args.algorithm, 
-            args.nthreads, 
-            &args.pattern_file, 
-            &args.contaminant_file, 
-            &args.adapter_file, 
-            args.overrepresented_musc, 
-            args.kmer_isi, 
-            args.tile_csb, 
-            args.tile_isi
-        );
+        let config = MetricsConfig::new(args);
 
         if args.input.len() > 1 {
             let inputs = args.input.to_owned();
@@ -208,15 +208,17 @@ pub fn run(args: &Arguments) {
             for handle in handles {
                 handle.join().unwrap();
             }
-        } else {
+        } else  {
             run_with_args(&args.input[0], &args.output, &config)
-        }
+        } 
     } else {
         error!("The output ({:?}) need to be a directory.", &args.output);
     }
 }
 
 pub fn run_with_args(input: &str, output: &str, config: &MetricsConfig) {
+
+
     let results = if Path::new(input).exists() {
         // TODO: Multi threads?
         if config.which == "checksum" {
