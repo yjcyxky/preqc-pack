@@ -10,6 +10,7 @@ use structopt::StructOpt;
 use std::thread;
 
 
+
 /// A collection of bam qc metrics, such as fastq screen, qualimap. Run bam -h for more usage.
 #[derive(StructOpt, PartialEq, Debug)]
 #[structopt(
@@ -24,7 +25,7 @@ pub struct Arguments {
     input: Vec<String>,
 
     /// Which module will be called.
-    #[structopt(name="which", short="w", long="which", possible_values=&["fastqscreen", "qualimap",  "all"], default_value="all")]
+    #[structopt(name="which", short="w", long="which", possible_values=&["fastqscreen", "qualimap","fastbam",  "all"], default_value="all")]
     which: String,
 
     /// The number of green threads for each file.
@@ -56,7 +57,7 @@ pub struct Arguments {
     skip_dup_flag: bool,
 
     /// [qualimap]  Activate this option to report information for the regions outside.
-    #[structopt( short = "s",long = "outside-stats")]
+    #[structopt( short = "t",long = "outside-stats")]
     outside_stats_flag:bool,
 
     /// [qualimap]  Specific type of duplicated alignments to skip (if this option is activated).
@@ -180,30 +181,52 @@ pub fn run_with_args(input: &str, output: &str, config: &MetricsConfig) {
         if config.which == "qualimap" {
             info!("Run qualimap on {:?}...", input);
         } else if config.which == "fastqscreen" {
-            info!("Run checkmate on {:?}...", input)
-        } else {
+            info!("Run fastqscreen on {:?}...", input)
+        }  else if config.which == "fastbam" {
+            info!("Run fastbam on {:?}...", input)
+        } 
+        else {
             info!("Run qualimap, fastqscreen on {:?}...", input);
         }
 
-        let mut qc = if config.nthreads == 1 {
-            QCResults::run_qc(
-                input,
-                &config.which,
-                &config.qualimap_config,
-            )
-        } else {
-            // multi-threads
-            QCResults::new()
-        };
+        let mut qc = QCResults::run_qc(
+            input,
+            &config.which,
+            &config.qualimap_config,
+        );
+
+        // export qualimap results
+        if qc.get_qualimap_results().is_some() {
+            
+           
+            if output.len() > 0{
+                // let qualimap = qc.get_qualimap_results().as_ref().unwrap();
+                let output_dir = output.to_string()+"/qualimap_result";
+                qc.get_qualimap_results().as_ref().unwrap().insert_size_stats.export_to_txt(output);
+                qc.get_qualimap_results().as_ref().unwrap().coverage_stats.export_to_txt(output);
+                qc.get_qualimap_results().as_ref().unwrap()
+                    .mapping_read_gc_content
+                    .export_to_txt(output);
+                qc.get_qualimap_results().as_ref().unwrap().detailed_stats.export_to_txt(output);
+            } else {
+                // let qualimap = qc.get_qualimap_results().as_ref().unwrap();
+                qc.get_qualimap_results().as_ref().unwrap().insert_size_stats.export_to_txt(".");
+                qc.get_qualimap_results().as_ref().unwrap().coverage_stats.export_to_txt(".");
+                qc.get_qualimap_results().as_ref().unwrap()
+                    .mapping_read_gc_content
+                    .export_to_txt(".");
+                qc.get_qualimap_results().as_ref().unwrap().detailed_stats.export_to_txt(".");
+            }
+           
+        }
 
         format!("{}", serde_json::to_string(&qc).unwrap())
     } else {
         error!("{} - Not Found: {:?}", module_path!(), input);
         std::process::exit(1);
     };
+    // let qualimap_results = r
 
-    // xxx.fq.gz/xxx.fastq.gz -> xxx
-    // xxx.fq/xxx.fastq -> xxx
     let basename = Path::new(input).file_stem().unwrap();
     let basename = Path::new(basename).file_stem().unwrap();
 

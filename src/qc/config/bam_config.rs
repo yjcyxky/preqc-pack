@@ -1,15 +1,18 @@
+use crate::qc::bam::fastbam::FastBam;
 use crate::qc::bam::qualimap::Qualimap;
 use serde::{Deserialize, Serialize};
 
 #[allow(dead_code)]
-pub struct Constants {}
-impl Constants {
+pub struct QualimapConstants {}
+impl QualimapConstants {
     pub const DEFAULT_NUMBER_OF_WINDOWS: i32 = 400;
     pub const DEFAULT_CHUNK_SIZE: i32 = 1000;
     pub const DEFAULT_HOMOPOLYMER_SIZE: i32 = 3;
     pub const DEFAULT_STABLIZED_WINDOW_PROPORTION: i32 = 500;
     pub const DEFAULT_LIB_PROTOCOL: &'static str = "non-strand-specific";
     pub const DEFAULT_SKIP_DUPLICATE_MODE: &'static str = "flagged";
+    pub const DEFAULT_DUPL_RATE_HIST_MAX: i32 = 50;
+    pub const DEFAULT_COVERAGE_HIST_MAX: i32 = 50;
 
     pub const GRAPHIC_TO_SAVE_WIDTH: i32 = 1024;
     pub const GRAPHIC_TO_SAVE_HEIGHT: i32 = 768;
@@ -83,6 +86,7 @@ pub struct QualimapConfig {
     window_num: usize,
     bunch_size: usize,
     min_homopolymer_size: usize,
+    dup_rate_max_read_starts: usize,
     // region analyze
     feature_file: String,
     outside_stats_flag: bool,
@@ -101,18 +105,19 @@ impl QualimapConfig {
         Self {
             // advanced options
             thread_num: 1,
-            window_num: Constants::DEFAULT_NUMBER_OF_WINDOWS as usize,
-            bunch_size: Constants::DEFAULT_CHUNK_SIZE as usize,
-            min_homopolymer_size: Constants::DEFAULT_HOMOPOLYMER_SIZE as usize,
+            window_num: QualimapConstants::DEFAULT_NUMBER_OF_WINDOWS as usize,
+            bunch_size: QualimapConstants::DEFAULT_CHUNK_SIZE as usize,
+            min_homopolymer_size: QualimapConstants::DEFAULT_HOMOPOLYMER_SIZE as usize,
+            dup_rate_max_read_starts: QualimapConstants::DEFAULT_DUPL_RATE_HIST_MAX as usize,
             // region analyze
             feature_file: "".to_string(),
             outside_stats_flag: false,
-            lib_protocol: Constants::DEFAULT_LIB_PROTOCOL.to_string(),
+            lib_protocol: QualimapConstants::DEFAULT_LIB_PROTOCOL.to_string(),
             // overlap detection
             collect_overlap_flag: false,
             // skip duplicates option
             skip_dup_flag: false,
-            skip_dup_mode: Constants::DEFAULT_SKIP_DUPLICATE_MODE.to_string(),
+            skip_dup_mode: QualimapConstants::DEFAULT_SKIP_DUPLICATE_MODE.to_string(),
             // reference gc content
             gc_genome: "".to_string(),
         }
@@ -150,6 +155,14 @@ impl QualimapConfig {
         self.min_homopolymer_size
     }
 
+    pub fn set_dup_rate_max_read_starts(&mut self, num: usize) {
+        self.dup_rate_max_read_starts = num;
+    }
+
+    pub fn get_dup_rate_max_read_starts(&self) -> usize {
+        self.dup_rate_max_read_starts
+    }
+
     pub fn set_feature_file(&mut self, feature_file: String) {
         self.feature_file = feature_file;
     }
@@ -166,7 +179,7 @@ impl QualimapConfig {
         self.outside_stats_flag
     }
 
-    pub fn set_lib_protocol(&mut self, protocol: String) {
+    pub fn set_lib_protocol(&mut self, protocol: &str) {
         self.lib_protocol = protocol.to_string();
     }
 
@@ -220,13 +233,27 @@ impl QCResults {
             fastqscreen: None,
         }
     }
+
+    pub fn set_qualimap_results(&mut self, qualimap_results: Option<Qualimap>) {
+        self.qualimap = qualimap_results;
+    }
+    pub fn get_qualimap_results(&self) -> Option<&Qualimap> {
+        self.qualimap.as_ref()
+    }
+
     pub fn run_qc(bam_path: &str, which: &str, qualimap_config: &QualimapConfig) -> QCResults {
         let mut result = QCResults::new();
 
-        let mut qc = Qualimap::new();
         if which == "qualimap" || which == "all" {
+            let mut qc = Qualimap::new();
             qc.run(bam_path, qualimap_config);
             result.qualimap = Some(qc);
+        }
+        if which == "fastbam" || which == "all" {
+            let mut qc = FastBam::new();
+            qc.run(bam_path, qualimap_config);
+            // run fastqscreen
+            // set results
         }
         if which == "fastqscreen" || which == "all" {
             // run fastqscreen
