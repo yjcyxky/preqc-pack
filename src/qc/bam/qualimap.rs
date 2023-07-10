@@ -1,24 +1,56 @@
-use crate::qc::config::bam_config::{Constants, QualimapConfig};
+#![feature(mutex_unlock)]
+use crate::qc::config::bam_config::{QualimapConfig, QualimapConstants};
+use crate::qc::util::{BamRecord, RegionOverlapLookupTable};
 use bit_vec::BitVec;
-use chashmap_serde::CHashMap;
 use executor_service::{ExecutorService, Executors, Future};
-use exitcode::OK;
-use futures::select_biased;
+use noodles::{bed, gff, gtf};
+extern crate num_cpus;
+use csv::WriterBuilder;
 use lazy_static::lazy_static;
 use linear_map::LinearMap;
 use math::stats;
 use regex::Regex;
 use rust_htslib::bam::record::{Aux, AuxArray, Cigar};
 use rust_htslib::bam::{Header, Read, Reader, Record};
+use rust_htslib::tpool;
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 use std::fmt::Debug;
+use std::fs::File;
+use std::io::prelude::*;
+use std::io::{self, BufReader};
+use std::path::Path;
+use std::sync::Mutex;
 use std::{
     collections::HashMap,
     f64::consts::{E, PI},
-    str::from_utf8,
     vec,
 };
-use time::{Date, Duration, Instant};
+use time::{ Duration, Instant};
+
+lazy_static! {
+    static ref OPEN_WINDOWS: Mutex<HashMap<i64, BamGenomeWindow>> = {
+        let mut map: HashMap<i64, BamGenomeWindow> = HashMap::new();
+        Mutex::new(map)
+    };
+    static ref OPEN_OUTSIDE_WINDOWS: Mutex<HashMap<i64, BamGenomeWindow>> = {
+        let mut map: HashMap<i64, BamGenomeWindow> = HashMap::new();
+        Mutex::new(map)
+    };
+    static ref GLOBAL_EXECUTOR: Mutex<ExecutorService<Box<dyn FnOnce() -> TaskResult + Send + 'static>, TaskResult>> = Mutex::new(Executors::new_fixed_thread_pool(4).expect("Failed to create the thread pool")); // 这里的数字表示线程池的大小
+}
+static mut NUMBER_OF_INITIALIZED_WINDOWS: i32 = 0;
+static mut NUMBER_OF_INITIALIZED_OUTSIDE_WINDOWS: i32 = 0;
+static mut NUMBER_OF_PROCESSED_WINDOWS: i32 = 0;
+static mut NUMBER_OF_PROCESSED_OUTSIDE_WINDOWS: i32 = 0;
+static mut NUMBER_OF_TOTAL_WINDOWS: i32 = 0;
+static mut WINDOW_NANMES: Vec<String> = vec![];
+static mut OUTSIDE_WINDOW_NANMES: Vec<String> = vec![];
+static mut WINDOW_STARTS: Vec<i64> = vec![];
+static mut WINDOW_ENDS: Vec<i64> = vec![];
+static mut CUSTOM_REFERENCES: Vec<u8> = vec![];
+static mut SELECTED_REGION_STARTS: Vec<i64> = vec![];
+static mut SELECTED_REGION_ENDS: Vec<i64> = vec![];
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum SkipDuplicatesMode {
@@ -188,63 +220,6 @@ impl XYVector {
         }
     }
 
-    fn from_arrays(x: &[f64], y: &[f64]) -> XYVector {
-        let mut items = Vec::new();
-        let mut max_value = 0.0;
-        for i in 0..x.len() {
-            items.push(XYIntervalItem::new(x[i], 0.0, 0.0, y[i], 0.0, 0.0));
-            if y[i] > max_value {
-                max_value = y[i];
-            }
-        }
-        XYVector { items, max_value }
-    }
-
-    fn from_lists(x: &[f64], y: &[f64]) -> XYVector {
-        let mut items = Vec::new();
-        let mut max_value = 0.0;
-        for i in 0..x.len() {
-            items.push(XYIntervalItem::new(x[i], 0.0, 0.0, y[i], 0.0, 0.0));
-            if y[i] > max_value {
-                max_value = y[i];
-            }
-        }
-        XYVector { items, max_value }
-    }
-
-    fn from_lists_with_deviation(
-        x: &[f64],
-        y: &[f64],
-        deviation: &[f64],
-        is_deviation: bool,
-    ) -> XYVector {
-        let mut items = Vec::new();
-        let mut max_value = 0.0;
-        for i in 0..x.len() {
-            if is_deviation {
-                items.push(XYIntervalItem::new(
-                    x[i],
-                    x[i],
-                    x[i],
-                    y[i],
-                    y[i] - deviation[i],
-                    y[i] + deviation[i],
-                ));
-            } else {
-                let (up, down) = if y[i] > deviation[i] {
-                    (y[i], deviation[i])
-                } else {
-                    (deviation[i], y[i])
-                };
-                items.push(XYIntervalItem::new(x[i], x[i], x[i], y[i], down, up));
-            }
-            if y[i] > max_value {
-                max_value = y[i];
-            }
-        }
-        XYVector { items, max_value }
-    }
-
     fn add_item(&mut self, item: XYItem) {
         self.items
             .push(XYIntervalItem::new(item.x, 0.0, 0.0, item.y, 0.0, 0.0));
@@ -279,29 +254,41 @@ impl XYVector {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ReadStartsHistogram {
+    max_read_starts_per_position: i32,
     current_read_start_position: i64,
     read_start_counter: i32,
     read_starts_histogram: Vec<i64>,
 }
 
 impl ReadStartsHistogram {
-    pub const MAX_READ_STARTS_PER_POSITION: usize = 50;
     fn new() -> Self {
         Self {
+            max_read_starts_per_position: QualimapConstants::DEFAULT_DUPL_RATE_HIST_MAX,
             current_read_start_position: -1,
             read_start_counter: 1,
-            read_starts_histogram: vec![0; Self::MAX_READ_STARTS_PER_POSITION + 1],
+            read_starts_histogram: vec![
+                0;
+                QualimapConstants::DEFAULT_DUPL_RATE_HIST_MAX as usize + 1
+            ],
         }
     }
 
+    pub fn set_max_read_starts_per_position(&mut self, num: i32) {
+        self.max_read_starts_per_position = num;
+        self.read_starts_histogram = vec![0; num as usize + 1];
+    }
+
+    pub fn get_max_read_starts_per_position(&self) -> i32 {
+        self.max_read_starts_per_position
+    }
     pub fn update(&mut self, position: i64) -> bool {
         if position == self.current_read_start_position {
             self.read_start_counter += 1;
         } else {
-            let hist_pos = if self.read_start_counter < Self::MAX_READ_STARTS_PER_POSITION as i32 {
+            let hist_pos = if self.read_start_counter < self.max_read_starts_per_position {
                 self.read_start_counter
             } else {
-                Self::MAX_READ_STARTS_PER_POSITION as i32
+                self.max_read_starts_per_position
             };
             self.read_starts_histogram[hist_pos as usize] += 1;
             self.read_start_counter = 1;
@@ -665,15 +652,6 @@ struct BamStats {
     // chromosome stats
     chromosome_stats: Vec<ChromosomeInfo>,
 
-    // windows
-    number_of_windows: i32,
-    number_of_processed_windows: i32,
-    number_of_initialized_windows: i32,
-    window_sizes: Vec<i64>,
-    window_starts: Vec<i64>,
-    window_ends: Vec<i64>,
-    window_names: Vec<String>,
-
     // reporting
     active_window_reporting: bool,
     // window_report: Option<std::fs::File>,
@@ -860,15 +838,6 @@ impl BamStats {
             // chromosome stats
             chromosome_stats: vec![],
 
-            // windows
-            number_of_windows: _number_of_windows as i32,
-            number_of_processed_windows: 0,
-            number_of_initialized_windows: 0,
-            window_sizes: vec![0; _number_of_windows],
-            window_starts: vec![0; _number_of_windows],
-            window_ends: vec![0; _number_of_windows],
-            window_names: vec!["".to_string(); _number_of_windows],
-
             // reporting
             active_window_reporting: false,
             // window_report: None,
@@ -893,6 +862,10 @@ impl BamStats {
     fn ensure_list_size(array: &mut Vec<i32>, expected_size: usize) {
         let size = array.len();
         if size < expected_size {
+            // array.reserve(expected_size - size+1);
+            // for _ in 0..new_size - old_size {
+            //     array.push(0);
+            // }
             for _ in 0..expected_size - size + 1 {
                 // tothink!() may be it's expected_size-size ,original is wrong
                 array.push(0);
@@ -900,21 +873,41 @@ impl BamStats {
         }
     }
 
-    fn inc_processed_windows(&mut self) {
-        self.number_of_processed_windows += 1;
+    fn set_window_references(&mut self, prefix: &str, window_positions: Vec<i64>) {
+        unsafe {
+            for i in 0..NUMBER_OF_TOTAL_WINDOWS as usize {
+                WINDOW_NANMES.push(format!("{}_{}", prefix, i + 1));
+                WINDOW_STARTS.push(window_positions[i]);
+
+                if i + 1 == NUMBER_OF_TOTAL_WINDOWS as usize {
+                    WINDOW_ENDS.push(self.reference_size);
+                } else {
+                    WINDOW_ENDS.push(window_positions[i + 1] - 1);
+                }
+            }
+        }
     }
 
-    fn set_window_references(&mut self, prefix: &str, window_positions: Vec<i64>) {
-        for i in 0..self.number_of_windows as usize {
-            self.window_names[i] = format!("{}_{}", prefix, i + 1);
-            self.window_starts[i] = window_positions[i];
-            if i + 1 == self.number_of_windows as usize {
-                self.window_ends[i] = self.reference_size;
-            } else {
-                self.window_ends[i] = window_positions[i + 1] - 1;
+    fn set_outside_window_references(&mut self, prefix: &str, window_positions: Vec<i64>) {
+        unsafe {
+            for i in 0..NUMBER_OF_TOTAL_WINDOWS as usize {
+                OUTSIDE_WINDOW_NANMES.push(format!("{}_{}", prefix, i + 1));
+                if WINDOW_STARTS.is_empty() && WINDOW_ENDS.is_empty() {
+                    WINDOW_STARTS.push(window_positions[i]);
+
+                    if i + 1 == NUMBER_OF_TOTAL_WINDOWS as usize {
+                        WINDOW_ENDS.push(self.reference_size);
+                    } else {
+                        WINDOW_ENDS.push(window_positions[i + 1] - 1);
+                    }
+                }
             }
-            self.window_sizes[i] = self.window_ends[i] - self.window_starts[i] + 1;
         }
+    }
+
+    fn set_dup_rate_max_read_starts(&mut self, num: i32) {
+        self.read_starts_histogram
+            .set_max_read_starts_per_position(num);
     }
 
     fn set_number_of_reads(&mut self) {}
@@ -958,10 +951,6 @@ impl BamStats {
         self.num_of_intersecting_mapped_bases = num_intersecting_bases;
     }
 
-    fn increment_initialized_windows(&mut self) {
-        self.number_of_initialized_windows += 1;
-    }
-
     pub fn set_source_file(&mut self, _source_file: String) {
         self.source_file = _source_file;
     }
@@ -975,44 +964,8 @@ impl BamStats {
     }
 
     fn get_homopolymer_indels_fraction(&self) -> f64 {
-        1.0 - self.homopolymer_indels_data[5] as f64
-            / (self.num_insertions + self.num_deletions) as f64
-    }
-
-    fn get_number_of_processed_windows(&self) -> i32 {
-        self.number_of_processed_windows
-    }
-
-    fn get_number_of_windows(&self) -> i32 {
-        self.number_of_windows
-    }
-
-    fn get_number_of_initialized_windows(&self) -> i32 {
-        self.number_of_initialized_windows
-    }
-
-    fn get_window_start(&self, index: usize) -> i64 {
-        self.window_starts[index]
-    }
-
-    fn get_window_end(&self, index: usize) -> i64 {
-        self.window_ends[index]
-    }
-
-    fn get_window_name(&self, index: usize) -> String {
-        self.window_names[index as usize].clone()
-    }
-
-    fn get_current_window_start(&self) -> i64 {
-        self.window_starts[self.number_of_processed_windows as usize]
-    }
-
-    fn get_current_window_end(&self) -> i64 {
-        self.window_ends[self.number_of_processed_windows as usize]
-    }
-
-    fn get_current_window_name(&self) -> String {
-        self.window_names[self.number_of_processed_windows as usize].clone()
+        (1.0 - self.homopolymer_indels_data[5] as f64
+            / (self.num_insertions + self.num_deletions) as f64)
     }
 
     fn get_reference_size(&self) -> i64 {
@@ -1027,8 +980,24 @@ impl BamStats {
         return self.num_insertions as usize;
     }
 
+    fn get_reads_with_insertion_percentage(&self) -> f64 {
+        self.num_reads_with_insertion as f64 / self.number_of_mapped_reads as f64 * 100.0
+    }
+
     fn get_num_deletions(&self) -> usize {
         return self.num_deletions as usize;
+    }
+
+    fn get_reads_with_deletions_percentage(&self) -> f64 {
+        self.num_reads_with_deletion as f64 / self.number_of_mapped_reads as f64 * 100.0
+    }
+
+    fn get_percentage_of_mapped_reads(&self) -> f64 {
+        self.number_of_mapped_reads as f64 / self.number_of_reads as f64 * 100.0
+    }
+
+    fn get_percentage_of_supp_alignments(&self) -> f64 {
+        self.number_of_supp_alignments as f64 / self.number_of_reads as f64 * 100.0
     }
 
     fn get_gc_content_histogram(&self) -> XYVector {
@@ -1098,12 +1067,12 @@ impl BamStats {
     fn update_mapping_histogram_value(&mut self, key: i64) {
         if key < Self::CACHE_SIZE as i64 {
             self.mapping_quality_histogram_cache[key as usize] += 1;
-        } else if !self.coverage_histogram_map.contains_key(&key) {
-            self.coverage_histogram_map.insert(key, 1);
+        } else if !self.mapping_quality_histogram_map.contains_key(&key) {
+            self.mapping_quality_histogram_map.insert(key, 1);
         } else {
-            let mut value = self.coverage_histogram_map.get(&key).unwrap();
+            let mut value = self.mapping_quality_histogram_map.get(&key).unwrap();
             let update_value = *value + 1;
-            self.coverage_histogram_map.insert(key, update_value);
+            self.mapping_quality_histogram_map.insert(key, update_value);
         }
     }
 
@@ -1217,6 +1186,7 @@ impl BamStats {
             self.coverage_per_window.push(window.get_sum_coverage());
             self.sum_coverage_squared += window.get_sum_coverage_sequared();
             self.sum_coverage += window.get_sum_coverage();
+            // update cache
             self.update_histograms(window);
         }
 
@@ -1376,45 +1346,47 @@ impl BamStats {
         locator: &GenomeLocator,
         chromosome_window_index: &Vec<usize>,
     ) {
-        let chromosome_count = chromosome_window_index.len();
-        let contig_records = locator.get_contigs();
+        unsafe {
+            let chromosome_count = chromosome_window_index.len();
+            let contig_records = locator.get_contigs();
 
-        self.chromosome_stats = Vec::with_capacity(chromosome_count);
+            self.chromosome_stats = Vec::with_capacity(chromosome_count);
 
-        for k in 0..chromosome_count {
-            let first_window_index = chromosome_window_index[k];
-            let last_window_index = if k + 1 < chromosome_count {
-                chromosome_window_index[k + 1] - 1
-            } else {
-                self.number_of_windows as usize - 1
-            };
+            for k in 0..chromosome_count {
+                let first_window_index = chromosome_window_index[k];
+                let last_window_index = if k + 1 < chromosome_count {
+                    chromosome_window_index[k + 1] - 1
+                } else {
+                    NUMBER_OF_TOTAL_WINDOWS as usize - 1
+                };
 
-            // Computing mean
-            let mut num_bases = 0;
-            let mut length = 0;
-            let mut sum_cov = 0;
-            let mut sum_cov_squared = 0;
-            for i in first_window_index..last_window_index + 1 {
-                num_bases += self.num_mapped_bases_per_window[i];
-                sum_cov += self.coverage_per_window[i];
-                sum_cov_squared += self.coverage_squared_per_window[i];
-                length += self.window_lengths[i];
+                // Computing mean
+                let mut num_bases = 0;
+                let mut length = 0;
+                let mut sum_cov = 0;
+                let mut sum_cov_squared = 0;
+                for i in first_window_index..last_window_index + 1 {
+                    num_bases += self.num_mapped_bases_per_window[i];
+                    sum_cov += self.coverage_per_window[i];
+                    sum_cov_squared += self.coverage_squared_per_window[i];
+                    length += self.window_lengths[i];
+                }
+
+                let contig = &contig_records[k];
+                let mut info = ChromosomeInfo::new(contig.name.clone(), 0, 0, 0.0, 0.0);
+                if length != 0 {
+                    info.length = length;
+                    info.num_bases = num_bases;
+                    info.cov_mean = num_bases as f64 / length as f64;
+                    let mean_coverage_squared = info.cov_mean * info.cov_mean;
+                    let std_coverage_squared: f64 = sum_cov_squared as f64
+                        - 2.0 * info.cov_mean * sum_cov as f64
+                        + mean_coverage_squared * length as f64;
+                    info.cov_std = (std_coverage_squared / length as f64).sqrt();
+                }
+
+                self.chromosome_stats.push(info);
             }
-
-            let contig = &contig_records[k];
-            let mut info = ChromosomeInfo::new(contig.name.clone(), 0, 0, 0.0, 0.0);
-            if length != 0 {
-                info.length = length;
-                info.num_bases = num_bases;
-                info.cov_mean = num_bases as f64 / length as f64;
-                let mean_coverage_squared = info.cov_mean * info.cov_mean;
-                let std_coverage_squared: f64 = sum_cov_squared as f64
-                    - 2.0 * info.cov_mean * sum_cov as f64
-                    + mean_coverage_squared * length as f64;
-                info.cov_std = (std_coverage_squared / length as f64).sqrt();
-            }
-
-            self.chromosome_stats.push(info);
         }
     }
 
@@ -1640,7 +1612,11 @@ impl BamStats {
 
         let mut num_positions = 0.0;
 
-        for i in 1..ReadStartsHistogram::MAX_READ_STARTS_PER_POSITION + 1 {
+        for i in 1..self
+            .read_starts_histogram
+            .get_max_read_starts_per_position() as usize
+            + 1
+        {
             let val = unique_read_starts_array[i];
             num_positions += val as f64;
             self.unique_read_starts_histogram
@@ -1669,11 +1645,11 @@ impl BamStats {
     }
 
     pub fn compute_reads_content_histogram(&mut self) {
-        let total_size = self.reads_as_data.len()
-            + self.reads_ts_data.len()
-            + self.reads_cs_data.len()
-            + self.reads_gs_data.len()
-            + self.reads_ns_data.len();
+        // let total_size = self.reads_as_data.len()
+        //     + self.reads_ts_data.len()
+        //     + self.reads_cs_data.len()
+        //     + self.reads_gs_data.len()
+        //     + self.reads_ns_data.len();
 
         // make sure that we have enough data
         Self::ensure_list_size(&mut self.reads_as_data, self.read_max_size as usize);
@@ -1739,6 +1715,8 @@ pub struct BamGenomeWindow {
     start: i64,
     end: i64,
     window_size: i64,
+    window_inside_reference_size: i64,
+
     // general
     number_of_mapped_bases: i64,
     number_of_sequenced_bases: i64,
@@ -1849,6 +1827,7 @@ impl BamGenomeWindow {
             start: _start,
             end: _end,
             window_size: _window_size,
+            window_inside_reference_size: 0,
             // general
             number_of_mapped_bases: 0,
             number_of_sequenced_bases: 0,
@@ -1944,6 +1923,88 @@ impl BamGenomeWindow {
         }
         instance
     }
+
+    fn init_window(
+        name: String,
+        window_start: i64,
+        window_end: i64,
+        selected_region_available: bool,
+        detailed_flag: bool,
+    ) -> Self {
+        let mut mini_reference: Vec<u8> = vec![];
+        unsafe {
+            if !CUSTOM_REFERENCES.is_empty() {
+                mini_reference = CUSTOM_REFERENCES
+                    [(window_start - 1) as usize..(window_end - 1) as usize]
+                    .to_vec()
+            }
+        }
+        let mut window = BamGenomeWindow::new(
+            name,
+            window_start,
+            window_end,
+            &mini_reference,
+            detailed_flag,
+        );
+        // region analysis
+        if selected_region_available {
+            Self::calculate_regions_lookup_table_for_window(&mut window);
+        }
+        window
+    }
+
+    fn calculate_regions_lookup_table_for_window(w: &mut BamGenomeWindow) {
+        let window_start = w.start;
+        let window_end = w.end;
+        let window_size = w.window_size as usize;
+
+        let mut bit_set = BitVec::from_elem(window_size, false);
+        unsafe {
+            let num_regions = SELECTED_REGION_STARTS.len();
+
+            for i in 0..num_regions {
+                let region_start = SELECTED_REGION_STARTS[i];
+                let region_end = SELECTED_REGION_ENDS[i];
+
+                if region_start == -1 {
+                    continue;
+                }
+
+                if region_start >= window_start && region_start <= window_end {
+                    let end = std::cmp::min(window_end, region_end);
+                    Self::set_range_flag(
+                        &mut bit_set,
+                        (region_start - window_start) as usize,
+                        (end - window_start + 1) as usize,
+                        true,
+                    );
+                } else if region_end >= window_start && region_end <= window_end {
+                    Self::set_range_flag(
+                        &mut bit_set,
+                        0,
+                        (region_end - window_start + 1) as usize,
+                        true,
+                    );
+                } else if region_start <= window_start && region_end >= window_end {
+                    Self::set_range_flag(
+                        &mut bit_set,
+                        0,
+                        (window_end - window_start + 1) as usize,
+                        true,
+                    );
+                }
+            }
+        }
+        w.selected_regions = bit_set;
+        w.selected_regions_available_flag = true;
+    }
+
+    fn set_range_flag(bit_set: &mut BitVec, start_index: usize, end_index: usize, flag: bool) {
+        for index in start_index..end_index {
+            bit_set.set(index, flag);
+        }
+    }
+
     fn process_reference(&mut self, reference: &Vec<u8>) {
         for nucleotide in reference {
             match *nucleotide as char {
@@ -1979,26 +2040,17 @@ impl BamGenomeWindow {
         self.reference_available = true;
     }
 
-    pub fn acum_base(&mut self, relative: i64) {
-        self.number_of_sequenced_bases += 1;
-        self.number_of_mapped_bases += 1;
-        if self.detailed_flag {
-            self.coverage_across_reference[relative as usize] =
-                self.coverage_across_reference[relative as usize] + 1;
-        }
-    }
-
-    pub fn acum_insert_size(&mut self, insert_size: i64) {
-        if insert_size > 0 {
-            self.correct_insert_sizes += 1;
-            self.acum_insert_size += insert_size.abs() as f64;
-        }
+    pub fn merge_insert_size(&mut self, correct_insert_size: i32, acum_insert_size: f64) {
+        self.correct_insert_sizes += correct_insert_size;
+        self.acum_insert_size += acum_insert_size;
     }
     /// Calculate the average metrics
     pub fn compute_descriptors(&mut self) {
+        // todo!() add effective_window_length to inside reference size
         self.effective_window_length = self.window_size;
         if self.selected_regions_available_flag {
-            // todo!() self.selected_regions.cardinality()
+            self.effective_window_length =
+                self.selected_regions.iter().filter(|x| *x).count() as i64
         }
 
         if self.effective_window_length != 0 {
@@ -2225,23 +2277,15 @@ impl BamGenomeWindow {
     }
 
     fn inverse_regions(&mut self) {
-        let mut inverse_selected_regions = BitVec::new();
-        for x in self.selected_regions.iter() {
-            inverse_selected_regions.push(!x);
-        }
-        self.selected_regions = inverse_selected_regions;
+        // let mut inverse_selected_regions = BitVec::new();
+        // for x in self.selected_regions.iter() {
+        //     inverse_selected_regions.push(!x);
+        // }
+        // self.selected_regions = inverse_selected_regions;
     }
 
     fn get_region(&self) -> &BitVec {
         &self.selected_regions
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RegionOverlapLookupTable {}
-impl RegionOverlapLookupTable {
-    pub fn new() -> Self {
-        Self {}
     }
 }
 
@@ -2418,8 +2462,8 @@ impl BamStatsCollector {
             info.second_read_start_pos = read.pos() as i32;
         } else {
             let info = ReadAlignmentInfo {
-                first_read_end_pos: (read.cigar().end_pos() - 1) as i32,
-                second_read_start_pos: -1,
+                first_read_end_pos: read.cigar().end_pos() as i32,
+                second_read_start_pos: 0,
             };
             self.pairs_collector.insert(read_name, info);
         }
@@ -2462,7 +2506,7 @@ pub struct SingleReadData {
 }
 
 impl SingleReadData {
-    pub fn new(_window_start: i64) -> Self {
+    pub fn new(_window_start: i64, window_size: i64) -> Self {
         Self {
             number_of_sequenced_bases: 0,
             number_of_mapped_bases: 0,
@@ -2471,8 +2515,8 @@ impl SingleReadData {
             number_of_cs: 0,
             number_of_gs: 0,
             number_of_ns: 0,
-            coverage_data: vec![],
-            mapping_quality_data: vec![],
+            coverage_data: Vec::with_capacity(window_size as usize),
+            mapping_quality_data: Vec::with_capacity(window_size as usize),
 
             window_start: _window_start,
         }
@@ -2491,6 +2535,9 @@ impl SingleReadData {
             'C' => self.acum_c(relative),
             'T' => self.acum_t(relative),
             'G' => self.acum_g(relative),
+            'N' => {
+                self.number_of_ns += 1;
+            }
             _ => {}
         }
 
@@ -2511,10 +2558,6 @@ impl SingleReadData {
 
     pub fn acum_g(&mut self, _relative: u64) {
         self.number_of_gs += 1;
-    }
-
-    pub fn acum_num_of_mapped_base(&mut self) {
-        self.number_of_mapped_bases += 1;
     }
 
     pub fn acum_mapping_quality(&mut self, relative: u64, mapping_quality: i32) {
@@ -2556,6 +2599,7 @@ impl ReadStatsCollector {
 
     fn ensure_array_size(array: &mut Vec<i32>, pos: usize) {
         let old_size = array.len();
+
         if pos >= old_size {
             let mut new_size = 0;
             if old_size * 2 < pos + 1 {
@@ -2563,6 +2607,7 @@ impl ReadStatsCollector {
             } else {
                 new_size = old_size * 2;
             }
+            array.reserve(new_size - old_size);
             for _ in 0..new_size - old_size {
                 array.push(0);
             }
@@ -2656,6 +2701,13 @@ impl ReadStatsCollector {
 
         self.prev_base = base;
         self.prev_base_inside_indel_region_flag = inside_indel_region;
+    }
+
+    fn reset_counters(&mut self) {
+        self.prev_base = 0;
+        self.homopolymer_size = 1;
+        self.prev_base_inside_indel_region_flag = false;
+        self.homopolymer_starts_inside_indel_region_flag = false;
     }
 
     fn save_homopolymer_data(&mut self) {
@@ -2812,6 +2864,9 @@ pub struct TaskResult {
     out_region_reads_data: Option<Vec<SingleReadData>>,
     read_stats_collector: Option<ReadStatsCollector>,
     out_region_read_stats_collector: Option<ReadStatsCollector>,
+    correct_insert_sizes: i32,
+    acum_insert_size: f64,
+    number_of_reads_with_start_greater_than_end: usize,
 }
 impl TaskResult {
     pub fn new() -> Self {
@@ -2820,6 +2875,16 @@ impl TaskResult {
             out_region_reads_data: None,
             read_stats_collector: None,
             out_region_read_stats_collector: None,
+            correct_insert_sizes: 0,
+            acum_insert_size: 0.0,
+            number_of_reads_with_start_greater_than_end: 0,
+        }
+    }
+
+    pub fn acum_insert_size(&mut self, insert_size: i64) {
+        if insert_size > 0 {
+            self.correct_insert_sizes += 1;
+            self.acum_insert_size += insert_size.abs() as f64;
         }
     }
 
@@ -2828,14 +2893,14 @@ impl TaskResult {
     }
 
     pub fn get_out_region_read_stats_collector(&self) -> &ReadStatsCollector {
-        &self.out_region_read_stats_collector.as_ref().unwrap()
+        self.out_region_read_stats_collector.as_ref().unwrap()
     }
 
     pub fn set_read_stats_collector(&mut self, read_stats_collector: ReadStatsCollector) {
         self.read_stats_collector = Some(read_stats_collector);
     }
 
-    pub fn set_out_region_read_stats_collector(
+    pub fn set_out_of_region_read_stats_collector(
         &mut self,
         read_stats_collector: ReadStatsCollector,
     ) {
@@ -2844,6 +2909,10 @@ impl TaskResult {
 
     pub fn set_global_reads_data(&mut self, reads_data: Vec<SingleReadData>) {
         self.reads_data = Some(reads_data);
+    }
+
+    pub fn set_number_of_reads_with_start_greater_than_end(&mut self, num_reads: usize) {
+        self.number_of_reads_with_start_greater_than_end = num_reads;
     }
 
     pub fn get_read_alignment_data(&self) -> &Vec<SingleReadData> {
@@ -2858,59 +2927,89 @@ impl TaskResult {
         self.out_region_reads_data.as_ref().unwrap()
     }
 }
-pub struct ProcessBunchOfReadsTask<'a> {
-    reads: Vec<Record>,
-    ctx: &'a mut BamStatsAnalysis,
+
+pub struct ProcessBunchOfReadsTask {
     // current_window: BamGenomeWindow,
     compute_insert_size_flag: bool,
-    is_paired_data_flag: bool,
     analyze_regions_flag: bool,
     compute_outside_stats_flag: bool,
     analysis_results: HashMap<i64, SingleReadData>,
     out_of_regions_results: HashMap<i64, SingleReadData>,
-    reads_gc_content: Vec<f32>,
     read_stats_collector: ReadStatsCollector,
-    out_of_regions_reads_gc_content: Vec<f32>,
     out_of_regions_read_stats_collector: ReadStatsCollector,
     locator: GenomeLocator,
+    number_of_reads_with_start_greater_than_end: usize,
+
+    // window infomation
+    current_window_start: i64,
+    current_window_end: i64,
+    current_window_region: BitVec,
 }
 
-impl<'a> ProcessBunchOfReadsTask<'a> {
+impl ProcessBunchOfReadsTask {
     const CIGAR_M: char = 'M';
     const CIGAR_EQ: char = '=';
 
     pub fn new(
-        _reads: Vec<Record>,
         selected_region_flag: bool,
         compute_outside_stats_flag: bool,
         min_homopolymer_size: i32,
         _locator: GenomeLocator,
-        _ctx: &'a mut BamStatsAnalysis,
+        _current_window_start: i64,
+        _current_window_end: i64,
+        _current_window_region: BitVec,
     ) -> Self {
         Self {
-            reads: _reads,
-            ctx: _ctx,
             compute_insert_size_flag: true,
-            is_paired_data_flag: true,
             analyze_regions_flag: selected_region_flag,
             compute_outside_stats_flag: compute_outside_stats_flag,
             analysis_results: HashMap::new(),
             out_of_regions_results: HashMap::new(),
-            reads_gc_content: vec![],
             read_stats_collector: ReadStatsCollector::new(min_homopolymer_size),
-            out_of_regions_reads_gc_content: vec![],
             out_of_regions_read_stats_collector: ReadStatsCollector::new(min_homopolymer_size),
             locator: _locator,
+            number_of_reads_with_start_greater_than_end: 0,
+            current_window_start: _current_window_start,
+            current_window_end: _current_window_end,
+            current_window_region: _current_window_region,
         }
     }
 
-    pub fn run(&mut self, time_to_task_run: &mut Duration) -> TaskResult {
-        let task_run_start = Instant::now();
-        let bunch_clone = self.reads.clone();
+    fn complement(base: u8) -> u8 {
+        match base {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'G' => b'C',
+            b'C' => b'G',
+            _ => base,
+        }
+    }
+    fn reverse_complete(bases: &mut Vec<u8>) {
+        let last_index = bases.len() - 1;
 
-        for record in &bunch_clone {
+        let mut i = 0;
+        let mut j = last_index;
+
+        while i < j {
+            let tmp = Self::complement(bases[i]);
+            bases[i] = Self::complement(bases[j]);
+            bases[j] = tmp;
+            i += 1;
+            j -= 1;
+        }
+
+        if bases.len() % 2 == 1 {
+            bases[i] = Self::complement(bases[i]);
+        }
+    }
+    pub fn run(&mut self, reads_bunch: Vec<BamRecord>) -> TaskResult {
+        let mut task_result = TaskResult::new();
+
+        for bam_record in &reads_bunch {
+            let record = bam_record.record();
+
             let contig_id = record.tid();
-            let contig_option = self.ctx.get_locator().get_contig(contig_id as usize);
+            let contig_option = self.locator.get_contig(contig_id as usize);
             // compute absolute position
             let mut read_absolute_start = -1;
             if let Some(contig) = contig_option {
@@ -2921,7 +3020,7 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
 
             let mut alignment: Vec<char> = vec![];
             // compute alignment
-            let read_in_region_flag = true;
+            let read_in_region_flag = bam_record.in_region_flag();
             if read_in_region_flag {
                 // it costs a lot of time, about 0.5~0.6 seconds
                 alignment = self.compute_read_alignment_and_collect(record);
@@ -2937,32 +3036,20 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
 
             // insert size
             if self.compute_insert_size_flag && record.is_proper_pair() {
-                let bam_stats = self.ctx.get_bam_stats().unwrap();
-                let current_window_start = bam_stats.get_current_window_start();
-                let current_window = self
-                    .ctx
-                    .open_windows
-                    .get_mut(&current_window_start)
-                    .unwrap();
-                // update insert size of current_window
-                current_window.acum_insert_size(record.insert_size());
+                // update insert size
+                task_result.acum_insert_size(record.insert_size());
             }
 
             let mapping_quality = record.mapq();
             let read_absolute_end = read_absolute_start + alignment.len() as i64 - 1;
 
-            let current_window_size = self.get_current_window_size();
-            let current_window_start = self.get_current_window_start();
-            let current_window_end = self.get_current_window_end();
-            let current_selected_region = self.get_current_window_selected_region().clone();
-
             // acum read
-
+            let region = self.current_window_region.clone();
             let out_of_bounds_flag = self.process_read_alignment(
-                current_window_size,
-                current_window_start,
-                current_window_end,
-                &current_selected_region,
+                self.current_window_end - self.current_window_start + 1,
+                self.current_window_start,
+                self.current_window_end,
+                &region,
                 &alignment,
                 read_absolute_start,
                 read_absolute_end,
@@ -2981,28 +3068,31 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
 
         self.read_stats_collector.save_gc();
 
-        let mut task_result = TaskResult::new();
         let mut reads_data = vec![];
 
         for val in self.analysis_results.values() {
             reads_data.push(val.clone());
         }
 
+        task_result.set_number_of_reads_with_start_greater_than_end(
+            self.number_of_reads_with_start_greater_than_end,
+        );
         task_result.set_global_reads_data(reads_data);
         task_result.set_read_stats_collector(self.read_stats_collector.clone());
 
         if self.analyze_regions_flag && self.compute_outside_stats_flag {
             self.out_of_regions_read_stats_collector.save_gc();
 
-            let mut out_of_regionreads_data = vec![];
+            let mut out_of_region_reads_data = vec![];
             for val in self.out_of_regions_results.values() {
-                out_of_regionreads_data.push(val.clone());
+                out_of_region_reads_data.push(val.clone());
             }
 
-            task_result.set_global_reads_data(out_of_regionreads_data);
-            task_result.set_read_stats_collector(self.out_of_regions_read_stats_collector.clone());
+            task_result.set_out_of_region_reads_data(out_of_region_reads_data);
+            task_result.set_out_of_region_read_stats_collector(
+                self.out_of_regions_read_stats_collector.clone(),
+            );
         }
-        *time_to_task_run += Instant::now() - task_run_start;
         task_result
     }
 
@@ -3054,9 +3144,15 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
         let mut read_pos = 0;
         let mut alignment_pos = 0;
         let mut alignment_vector: Vec<char> = vec![0 as char; alignment_length as usize];
-        let read_bases = read.seq();
+        let mut read_bases = read.seq().as_bytes();
+
+        // read.getReadNegativeStrandFlag()
+        if read.is_reverse() {
+            Self::reverse_complete(&mut read_bases);
+        }
 
         // function collect base takes 0.15~0.17 seconds, this cycle costs about 0.4 seconds
+        self.read_stats_collector.reset_counters();
         for pos in 0..extended_cigar_vector.len() {
             let cigar_char = extended_cigar_vector[pos];
 
@@ -3131,7 +3227,8 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
         let mut read_is_clipped = false;
         let mut read_has_deletion = false;
         let mut read_has_insertion = false;
-        for (_i, c) in cigar.iter().enumerate() {
+
+        for (__, c) in cigar.iter().enumerate() {
             total_size += c.len();
             if c.char() == 'H' || c.char() == 'S' {
                 read_is_clipped = true;
@@ -3157,6 +3254,7 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
         let mut end_pos = 0;
         // compute extended cigar
         let mut extended_cigar_vector: Vec<char> = vec![' '; total_size as usize];
+
         for (_, c) in cigar.iter().enumerate() {
             end_pos = start_pos + c.len();
             for pos in start_pos..end_pos {
@@ -3165,21 +3263,29 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
             start_pos = end_pos;
         }
 
-        let mut alignment_vector: Vec<char> = vec![0 as char; alignment_length as usize];
+        let mut read_bases = read.seq().as_bytes();
+        self.out_of_regions_read_stats_collector.reset_counters();
+        if read.is_reverse() {
+            Self::reverse_complete(&mut read_bases);
+        }
+
+        // function collect base takes 0.15~0.17 seconds, this cycle costs about 0.4 seconds
         let mut read_pos = 0;
         let mut alignment_pos = 0;
-        let read_bases = read.seq();
+        let mut alignment_vector: Vec<char> = vec![0 as char; alignment_length as usize];
 
         for pos in 0..extended_cigar_vector.len() {
             let cigar_char = extended_cigar_vector[pos];
-            let base = read_bases[read_pos];
+
             if cigar_char == 'M' || cigar_char == '=' {
+                let base = read_bases[read_pos];
                 self.out_of_regions_read_stats_collector
                     .collect_base(read_pos, base, false);
                 read_pos += 1;
                 alignment_vector[alignment_pos as usize] = base as char;
                 alignment_pos += 1;
             } else if cigar_char == 'I' {
+                let base = read_bases[read_pos];
                 self.out_of_regions_read_stats_collector
                     .collect_base(read_pos, base, true);
                 read_pos += 1;
@@ -3219,10 +3325,11 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
         }
 
         let num_mismatches = self.compute_read_mismatches(read);
+
         self.out_of_regions_read_stats_collector
             .inc_num_mismatches(num_mismatches as i32);
 
-        match read.aux(b"MD") {
+        match read.aux(b"NM") {
             Ok(value) => {
                 if let Aux::U8(v) = value {
                     self.out_of_regions_read_stats_collector
@@ -3259,49 +3366,59 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
 
     fn compute_read_alignment(&self, read: &Record) -> Vec<char> {
         let alignment_length = read.cigar().end_pos() - read.pos();
-        let read_length = read.seq_len();
-        if alignment_length <= 0 || read_length == 0 {
+
+        if alignment_length < 0 {
             return vec![];
         }
         // precompute total size of alignment
         let mut total_size = 0;
         let cigar = read.cigar();
-        let mut read_is_clipped = false;
-        let mut read_has_deletion = false;
-        let mut read_has_insertion = false;
+
         for (_i, c) in cigar.iter().enumerate() {
             total_size += c.len();
         }
 
         // compute extended cigar
-        let mut extended_cigar_vector: Vec<char> = vec![];
+        let mut extended_cigar_vector: Vec<char> = vec![' '; total_size as usize];
+        let mut start_pos = 0;
+        let mut end_pos = 0;
         for (_, c) in cigar.iter().enumerate() {
-            for j in 0..c.len() as usize {
-                extended_cigar_vector.push(c.char());
+            end_pos = start_pos + c.len();
+            for pos in start_pos..end_pos {
+                extended_cigar_vector[pos as usize] = c.char();
             }
+            start_pos = end_pos;
         }
 
-        let mut alignment_vector: Vec<char> = vec![];
         let mut read_pos = 0;
         let read_bases = read.seq();
+        let mut alignment_pos = 0;
+        let mut alignment_vector: Vec<char> = vec![0 as char; alignment_length as usize];
 
         for pos in 0..extended_cigar_vector.len() {
             let cigar_char = extended_cigar_vector[pos];
-            let base = read_bases[read_pos];
+
             if cigar_char == 'M' || cigar_char == '=' {
+                // get base
+                let base = read_bases[read_pos];
                 read_pos += 1;
-                alignment_vector.push(base as char);
+                alignment_vector[alignment_pos as usize] = base as char;
+                // set base
+                alignment_pos += 1;
             } else if cigar_char == 'I' {
                 read_pos += 1;
             } else if cigar_char == 'D' {
-                alignment_vector.push('-');
+                alignment_vector[alignment_pos as usize] = '-';
+                alignment_pos += 1;
             } else if cigar_char == 'N' {
-                alignment_vector.push('N');
+                alignment_vector[alignment_pos as usize] = 'N';
+                alignment_pos += 1;
             } else if cigar_char == 'S' {
                 read_pos += 1;
             } else if cigar_char == 'H' {
             } else if cigar_char == 'P' {
-                alignment_vector.push('-');
+                alignment_vector[alignment_pos as usize] = '-';
+                alignment_pos += 1;
             }
         }
 
@@ -3322,10 +3439,22 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
         // working variables
         let mut out_of_bounds_flag = false;
 
-        let mut read_data = Self::get_window_data(window_start, &mut self.analysis_results);
+        let mut in_region_read_data =
+            Self::get_window_data(window_start, window_size, &mut self.analysis_results);
+
+        let mut out_region_read_data = None;
+        if self.compute_outside_stats_flag {
+            out_region_read_data = Some(Self::get_window_data(
+                window_start,
+                window_size,
+                &mut self.out_of_regions_results,
+            ));
+        }
+
+        let mut read_data = &mut in_region_read_data;
 
         if read_start > read_end {
-            self.ctx.inc_number_of_reads_with_start_greater_then_end();
+            self.number_of_reads_with_start_greater_than_end += 1
         }
         if read_end > window_end {
             out_of_bounds_flag = true;
@@ -3346,11 +3475,10 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
 
                 if inside_of_region_flag {
                     if self.compute_outside_stats_flag {
-                        read_data = Self::get_window_data(window_start, &mut self.analysis_results);
+                        read_data = &mut in_region_read_data;
                     }
                 } else if self.compute_outside_stats_flag {
-                    read_data =
-                        Self::get_window_data(window_start, &mut self.out_of_regions_results);
+                    read_data = out_region_read_data.as_mut().unwrap();
                 } else {
                     continue;
                 }
@@ -3360,13 +3488,11 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
 
             // aligned bases
             read_data.number_of_mapped_bases += 1;
-            if nucleotide != '-' && nucleotide != 'N' {
+            if nucleotide != '-' {
                 // mapping quality
                 read_data.acum_mapping_quality(relative as u64, mapping_quality as i32);
                 // base stats
                 read_data.acum_base(relative as u64, nucleotide);
-            } else if nucleotide == 'N' {
-                read_data.number_of_ns += 1;
             }
         }
 
@@ -3380,136 +3506,172 @@ impl<'a> ProcessBunchOfReadsTask<'a> {
         read_end: i64,
         mapping_quality: u8,
     ) {
-        let num_of_processed_windows = self.get_number_of_processed_windows();
-        let num_of_windows = self.get_total_number_of_windows();
+        let num_of_processed_windows = unsafe { NUMBER_OF_PROCESSED_WINDOWS };
+        let num_of_windows = unsafe { NUMBER_OF_TOTAL_WINDOWS };
 
         let mut index = num_of_processed_windows + 1;
         let mut out_of_bounds = true;
         let mut adjacent_window: &BamGenomeWindow;
-        while out_of_bounds && index < num_of_windows {
-            let window_start = self
-                .ctx
-                .bam_stats
-                .as_ref()
-                .unwrap()
-                .get_window_start(index as usize);
-            // synchronized (lock) {
-            adjacent_window = self.ctx.get_open_window(window_start);
-            let window_size = adjacent_window.get_window_size();
-            let window_start = adjacent_window.get_window_start();
-            let window_end = adjacent_window.get_window_end();
-            let selected_region = adjacent_window.get_region().clone();
+        unsafe {
+            while out_of_bounds && index < num_of_windows {
+                let window_start = WINDOW_STARTS[index as usize];
 
-            if self.compute_outside_stats_flag {
-                self.ctx.get_outside_open_window(window_start);
+                // check if we should insert a new open window
+                Self::check_open_windows(window_start, &self.locator, self.analyze_regions_flag);
+                let open_windows = OPEN_WINDOWS.lock().unwrap();
+                adjacent_window = open_windows.get(&window_start).unwrap();
+
+                if self.compute_outside_stats_flag {
+                    // check if we should insert a new open outside window
+                    Self::check_open_outside_windows(
+                        window_start,
+                        &self.locator,
+                        self.analyze_regions_flag,
+                    );
+                    let open_outside_windows = OPEN_OUTSIDE_WINDOWS.lock().unwrap();
+                    open_outside_windows.get(&window_start).unwrap();
+                }
+
+                // acum read
+                let window_size = adjacent_window.get_window_size();
+                let window_start = adjacent_window.get_window_start();
+                let window_end = adjacent_window.get_window_end();
+                let selected_region = adjacent_window.get_region().clone();
+                out_of_bounds = self.process_read_alignment(
+                    window_size,
+                    window_start,
+                    window_end,
+                    &selected_region,
+                    alignment,
+                    read_start,
+                    read_end,
+                    mapping_quality,
+                );
+                index += 1;
             }
-            // }
+        }
+    }
 
-            // acum read
-            out_of_bounds = self.process_read_alignment(
-                window_size,
-                window_start,
-                window_end,
-                &selected_region,
-                alignment,
-                read_start,
-                read_end,
-                mapping_quality,
-            );
-            index += 1;
+    fn check_open_windows(window_start: i64, locator: &GenomeLocator, analyze_regions_flag: bool) {
+        unsafe {
+            let mut open_windows = OPEN_WINDOWS.lock().unwrap();
+
+            if open_windows.contains_key(&window_start) {
+                return;
+            } else {
+                let num_init_windows = NUMBER_OF_INITIALIZED_WINDOWS;
+                let window_name = WINDOW_NANMES[num_init_windows as usize].clone();
+                let window_end = WINDOW_ENDS[num_init_windows as usize];
+                // todo!() it didn't consider custom refernce file
+                let reference_size = locator.get_total_size();
+                // update number of initialized windows
+                NUMBER_OF_INITIALIZED_WINDOWS += 1;
+                let new_window = BamGenomeWindow::init_window(
+                    window_name,
+                    window_start,
+                    window_end.min(reference_size),
+                    analyze_regions_flag,
+                    true,
+                );
+
+                open_windows.insert(window_start, new_window);
+            }
+        }
+    }
+
+    fn check_open_outside_windows(
+        window_start: i64,
+        locator: &GenomeLocator,
+        analyze_regions_flag: bool,
+    ) {
+        unsafe {
+            let mut open_outside_windows = OPEN_OUTSIDE_WINDOWS.lock().unwrap();
+
+            if open_outside_windows.contains_key(&window_start) {
+                return;
+            } else {
+                let num_init_windows = NUMBER_OF_INITIALIZED_OUTSIDE_WINDOWS;
+                let window_name = OUTSIDE_WINDOW_NANMES[num_init_windows as usize].clone();
+                let window_end = WINDOW_ENDS[num_init_windows as usize];
+                // todo!() it didn't consider custom refernce file
+                let reference_size = locator.get_total_size();
+                // update number of initialized windows
+                NUMBER_OF_INITIALIZED_OUTSIDE_WINDOWS += 1;
+                let new_window = BamGenomeWindow::init_window(
+                    window_name,
+                    window_start,
+                    window_end.min(reference_size),
+                    analyze_regions_flag,
+                    true,
+                );
+
+                open_outside_windows.insert(window_start, new_window);
+            }
         }
     }
 
     fn get_window_data(
         window_start: i64,
+        window_size: i64,
         results_map: &mut HashMap<i64, SingleReadData>,
     ) -> &mut SingleReadData {
         if results_map.contains_key(&window_start) {
             results_map.get_mut(&window_start).unwrap()
         } else {
-            let data = SingleReadData::new(window_start);
+            let data = SingleReadData::new(window_start, window_size);
             results_map.insert(window_start, data);
             results_map.get_mut(&window_start).unwrap()
         }
     }
 
-    fn get_current_window_size(&self) -> i64 {
-        self.ctx.get_current_window().unwrap().get_window_size()
-    }
-
-    fn get_current_window_start(&self) -> i64 {
-        self.ctx.get_current_window().unwrap().get_window_start()
-    }
-
-    fn get_current_window_end(&self) -> i64 {
-        self.ctx.get_current_window().unwrap().get_window_end()
-    }
-
-    fn get_current_window_selected_region(&self) -> &BitVec {
-        self.ctx.get_current_window().unwrap().get_region()
-    }
-
-    fn get_number_of_processed_windows(&self) -> i32 {
-        self.ctx
-            .bam_stats
-            .as_ref()
-            .unwrap()
-            .get_number_of_processed_windows()
-    }
-
-    fn get_total_number_of_windows(&self) -> i32 {
-        self.ctx.bam_stats.as_ref().unwrap().get_number_of_windows()
-    }
-
     fn get_read_stats_collector(&mut self, read: &Record) -> Option<&mut ReadStatsCollector> {
         Some(&mut self.read_stats_collector)
-    }
-
-    fn compute_num_mismatches(read: &Record) -> i32 {
-        let mut num_mismatches = 0;
-
-        // if let Some(md_attr) = read.aux(b"MD").and_then(|a| a.string()) {
-        //     for c in md_attr.chars() {
-        //         if c == 'A' || c == 'C' || c == 'G' || c == 'T' {
-        //             num_mismatches += 1;
-        //         }
-        //     }
-        // }
-
-        num_mismatches
     }
 }
 
 struct FinalizeWindowTask<'a> {
     bam_stats: &'a mut BamStats,
-    window: &'a mut BamGenomeWindow,
+    current_window_start: i64,
 }
 
 impl<'a> FinalizeWindowTask<'a> {
-    pub fn new(_bam_stats: &'a mut BamStats, _window: &'a mut BamGenomeWindow) -> Self {
+    pub fn new(_bam_stats: &'a mut BamStats, _current_window_start: i64) -> Self {
         Self {
             bam_stats: _bam_stats,
-            window: _window,
+            current_window_start: _current_window_start,
         }
     }
 
-    pub fn run(&mut self) -> i32 {
-        self.window.compute_descriptors();
-        self.bam_stats.add_window_information(self.window);
+    pub fn run_inside(&mut self) -> i32 {
+        let mut open_windows = OPEN_WINDOWS.lock().unwrap();
+        let current_window = open_windows.get_mut(&self.current_window_start).unwrap();
+        current_window.compute_descriptors();
+        self.bam_stats.add_window_information(current_window);
+
+        // todo!() error handling
+        return 0;
+    }
+
+    pub fn run_outside(&mut self) -> i32 {
+        let mut open_outside_windows = OPEN_OUTSIDE_WINDOWS.lock().unwrap();
+        let current_outside_window = open_outside_windows
+            .get_mut(&self.current_window_start)
+            .unwrap();
+        current_outside_window.compute_descriptors();
+        self.bam_stats
+            .add_window_information(current_outside_window);
 
         // todo!() error handling
         return 0;
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct BamStatsAnalysis {
     bam_file: String,
 
     // reference
     reference_file: String,
     reference_available_flag: bool,
-    reference: Vec<u8>,
     reference_size: i64,
     number_of_reference_config: usize,
 
@@ -3537,12 +3699,14 @@ pub struct BamStatsAnalysis {
     // private LoggerThread loggerThread;
 
     // working variables
-    current_window: Option<BamGenomeWindow>,
-    open_windows: HashMap<i64, BamGenomeWindow>,
+    current_window_start: i64,
+    current_window_end: i64,
+    current_window_region: Option<BitVec>,
     thread_number: usize,
     num_reads_in_bunch: i32,
     progress: usize,
     min_homopolymer_size: i32,
+    dup_rate_max_read_starts: i32,
 
     // nucleotide reporting
     out_dir: String,
@@ -3560,7 +3724,9 @@ pub struct BamStatsAnalysis {
 
     // outside region analysis
     compute_outside_stats_flag: bool,
-    current_outside_window: Option<BamGenomeWindow>,
+    current_outside_window_start: i64,
+    current_outside_window_end: i64,
+    current_outside_window_region: Option<BitVec>,
     open_outside_windows: HashMap<i64, BamGenomeWindow>,
     outside_bam_stats: Option<BamStats>,
 
@@ -3570,8 +3736,8 @@ pub struct BamStatsAnalysis {
     min_read_size: usize,
 
     // region
-    selected_region_starts: Vec<usize>,
-    selected_region_ends: Vec<usize>,
+    selected_region_starts: Vec<i64>,
+    selected_region_ends: Vec<i64>,
     region_overlap_lookup_table: RegionOverlapLookupTable,
     protocol: LibraryProtocol,
 
@@ -3592,7 +3758,7 @@ pub struct BamStatsAnalysis {
 
     // analysis
     is_paired_data_flag: bool,
-    results: Vec<TaskResult>,
+    results: Vec<Future<TaskResult>>,
     // Future<Integer> finalizeWindowResult;
     // #[serde(skip_serializing)]
     // #[serde(skip_deserializing)]
@@ -3600,9 +3766,8 @@ pub struct BamStatsAnalysis {
     time_to_calc_overlappers: usize,
     pg_program: String,
     pg_command_string: String,
-    reads_bunch: Vec<Record>,
     // // multi thread
-    // worker_thread_pool: Option<ExecutorService<_,_>>,
+    thread_pool: ExecutorService<Box<dyn FnOnce() -> TaskResult + Send + 'static>, TaskResult>,
 }
 
 impl BamStatsAnalysis {
@@ -3630,7 +3795,9 @@ impl BamStatsAnalysis {
         let window_num = qualimap_config.get_window_num();
         let bun_size = qualimap_config.get_bunch_size();
         let min_homopolymer_size = qualimap_config.get_min_homopolymer_size();
+        let dup_rate_max_read_starts = qualimap_config.get_dup_rate_max_read_starts();
         let _feature_file = qualimap_config.get_feature_file();
+
         let outside_analyze_flag = qualimap_config.get_outside_region_analyze_flag();
         let lib_protocal = qualimap_config.get_lib_protocol();
 
@@ -3661,7 +3828,6 @@ impl BamStatsAnalysis {
             // reference
             reference_file: "".to_string(),
             reference_available_flag: false,
-            reference: vec![],
             reference_size: 0,
             number_of_reference_config: 0,
 
@@ -3688,12 +3854,14 @@ impl BamStatsAnalysis {
             // private LoggerThread loggerThread;
 
             // working variables
-            current_window: None,
-            open_windows: HashMap::new(),
+            current_window_start: -1,
+            current_window_end: -1,
+            current_window_region: None,
             thread_number: thread_num,
             num_reads_in_bunch: bun_size as i32,
             progress: 0,
             min_homopolymer_size: min_homopolymer_size as i32,
+            dup_rate_max_read_starts: dup_rate_max_read_starts as i32,
 
             // nucleotide reporting
             out_dir: ".".to_string(),
@@ -3711,7 +3879,9 @@ impl BamStatsAnalysis {
 
             // outside region analysis
             compute_outside_stats_flag: outside_analyze_flag,
-            current_outside_window: None,
+            current_outside_window_start: -1,
+            current_outside_window_end: -1,
+            current_outside_window_region: None,
             open_outside_windows: HashMap::new(),
             outside_bam_stats: None,
 
@@ -3749,12 +3919,9 @@ impl BamStatsAnalysis {
             time_to_calc_overlappers: 0,
             pg_program: "".to_string(),
             pg_command_string: "".to_string(),
-            reads_bunch: vec![],
+            thread_pool: Executors::new_fixed_thread_pool(thread_num as u32)
+                .expect("Failed to create the thread pool"),
         }
-
-        // Set the region file
-        // reporting
-        // setup logging
     }
 
     pub fn to_hashmap(&self, header: &Header) -> HashMap<String, Vec<LinearMap<String, String>>> {
@@ -3825,8 +3992,8 @@ impl BamStatsAnalysis {
         // load locator
         last_action_done = "Loading locator...";
         println!("{}", last_action_done);
-        self.load_locator(&header);
-        self.load_program_records(&header);
+        self.load_locator(&hash_header);
+        self.load_program_records(&hash_header);
 
         // load reference
         last_action_done = "Loading reference...";
@@ -3837,8 +4004,12 @@ impl BamStatsAnalysis {
         self.window_size = self.compute_window_size(self.reference_size, self.number_of_windows);
         let window_positions: Vec<i64> = self.compute_window_positions(self.window_size);
         self.effective_number_of_window = window_positions.len() as i32;
+        unsafe {
+            NUMBER_OF_TOTAL_WINDOWS = self.effective_number_of_window;
+        }
 
-        if self.effective_number_of_window > Constants::DEFAULT_STABLIZED_WINDOW_PROPORTION {
+        if self.effective_number_of_window > QualimapConstants::DEFAULT_STABLIZED_WINDOW_PROPORTION
+        {
             self.window_block_size_to_report = self.effective_number_of_window as usize / 10;
         }
 
@@ -3860,7 +4031,11 @@ impl BamStatsAnalysis {
             self.number_of_windows, self.effective_number_of_window
         );
         println!("Chunk of reads size: {}", self.num_reads_in_bunch);
-        println!("Number of threads: {}", self.thread_number);
+        println!(
+            "Current number of threads: {}, and max number support in your device is: {}",
+            self.thread_number,
+            num_cpus::get()
+        );
         // initialize BamStats
         let mut bam_stats_instance = BamStats::new(
             "genome".to_string(),
@@ -3870,7 +4045,8 @@ impl BamStatsAnalysis {
         );
 
         bam_stats_instance.set_source_file(self.bam_file.clone());
-        bam_stats_instance.set_window_references("w", window_positions);
+        bam_stats_instance.set_window_references("w", window_positions.clone());
+        bam_stats_instance.set_dup_rate_max_read_starts(self.dup_rate_max_read_starts);
         self.bam_stats = Some(bam_stats_instance);
 
         if self.collect_intersecting_paired_end_reads_flag {
@@ -3885,38 +4061,304 @@ impl BamStatsAnalysis {
 
         // regions
         if self.selected_regions_available_flag {
-            // todo!()
             // load selected regions
+            self.load_selected_regions();
 
             // outside of regions stats
-            if self.compute_outside_stats_flag {}
+            if self.compute_outside_stats_flag {
+                // initialize outside bamStats
+                let mut outside_bam_stats_instance = BamStats::new(
+                    "outside".to_string(),
+                    self.locator.clone(),
+                    self.reference_size,
+                    self.effective_number_of_window as usize,
+                );
+
+                outside_bam_stats_instance.set_source_file(self.bam_file.clone());
+                outside_bam_stats_instance.set_outside_window_references("out_w", window_positions);
+                outside_bam_stats_instance
+                    .set_dup_rate_max_read_starts(self.dup_rate_max_read_starts);
+                self.outside_bam_stats = Some(outside_bam_stats_instance);
+
+                // get next outside window
+                self.next_outside_window(true);
+
+                // todo()!
+                // if(activeReporting) {
+                //     outsideBamStats.activateWindowReporting(outdir + "/outside_window.txt");
+                // }
+
+                // if(saveCoverage){
+                //     outsideBamStats.activateCoverageReporting(outdir + "/outside_coverage.txt", nonZeroCoverageOnly);
+                // }
+
+                // we have twice more data from the bunch, so the queue is limited now
+                self.max_size_of_task_queue /= 2;
+            }
         }
 
-        self.current_window = self.next_window(true);
+        // get next window
+        self.next_window(true);
     }
+
+    fn load_bed_regions(&mut self) -> io::Result<()> {
+        let mut regions_with_missing_chromosomes_count = 0;
+
+        let mut reader = File::open(&self.feature_file)
+            .map(BufReader::new)
+            .map(bed::Reader::new)?;
+
+        println!("Initializing regions from {}.....", &self.feature_file);
+        for result in reader.records::<3>() {
+            let _ = result?;
+            self.num_of_selected_regions += 1;
+        }
+        if self.num_of_selected_regions == 0 {
+            panic!("Failed to load selected regions.");
+        }
+        println!("Found {} regions", self.num_of_selected_regions);
+
+        self.selected_region_starts = vec![0; self.num_of_selected_regions];
+        self.selected_region_ends = vec![0; self.num_of_selected_regions];
+
+        println!("Filling region references... ");
+        reader = File::open(&self.feature_file)
+            .map(BufReader::new)
+            .map(bed::Reader::new)?;
+        let mut pos = -1;
+        let mut index = 0;
+
+        for result in reader.records::<3>() {
+            let record = result?;
+            pos = self.locator.get_absolute_coordinates(
+                record.reference_sequence_name(),
+                record.start_position().get() as i32,
+            );
+            if pos == -1 {
+                self.selected_region_starts[index] = -1;
+                self.selected_region_ends[index] = -1;
+                regions_with_missing_chromosomes_count += 1;
+                continue;
+            }
+
+            let region_length = record.end_position().get() - record.start_position().get() + 1;
+            self.selected_region_starts[index] = pos;
+            self.selected_region_ends[index] = pos + region_length as i64 - 1;
+
+            let record_string = record.to_string();
+            let fields: Vec<&str> = record_string.split("\t").collect();
+            let mut is_negative_strand = false;
+
+            // NOTE: strand-specificity is analyzed in BAM file, but not for 3-column BED
+            if fields.len() >= 6 && fields[5] == "-" {
+                is_negative_strand = true;
+            }
+            self.region_overlap_lookup_table.put_region(
+                record.start_position().get(),
+                record.end_position().get(),
+                record.reference_sequence_name(),
+                !is_negative_strand,
+            );
+            index += 1;
+        }
+
+        if regions_with_missing_chromosomes_count == self.num_of_selected_regions {
+            panic!("The feature file with regions can not be associated with the BAM file.\n
+            Please check, if the chromosome names match in the annotation file and the alignment file.");
+        } else if regions_with_missing_chromosomes_count > 0 {
+            println!(
+                "{} regions were skipped because chromosome name was not found in the BAM file.",
+                regions_with_missing_chromosomes_count
+            );
+        }
+        Ok(())
+    }
+
+    fn load_gff_regions(&mut self) -> io::Result<()> {
+        let mut regions_with_missing_chromosomes_count = 0;
+
+        let mut reader = File::open(&self.feature_file)
+            .map(BufReader::new)
+            .map(gff::Reader::new)?;
+        println!("Initializing regions from {}.....", &self.feature_file);
+        for result in reader.records() {
+            let _ = result?;
+            self.num_of_selected_regions += 1;
+        }
+        if self.num_of_selected_regions == 0 {
+            panic!("Failed to load selected regions.");
+        }
+        println!("Found {} regions", self.num_of_selected_regions);
+
+        self.selected_region_starts = vec![0; self.num_of_selected_regions];
+        self.selected_region_ends = vec![0; self.num_of_selected_regions];
+
+        println!("Filling region references... ");
+        reader = File::open(&self.feature_file)
+            .map(BufReader::new)
+            .map(gff::Reader::new)?;
+        let mut pos = -1;
+        let mut index = 0;
+
+        for result in reader.records() {
+            let record = result?;
+            pos = self.locator.get_absolute_coordinates(
+                record.reference_sequence_name(),
+                record.start().get() as i32,
+            );
+            if pos == -1 {
+                self.selected_region_starts[index] = -1;
+                self.selected_region_ends[index] = -1;
+                regions_with_missing_chromosomes_count += 1;
+                continue;
+            }
+
+            let region_length = record.end().get() - record.start().get() + 1;
+            self.selected_region_starts[index] = pos;
+            self.selected_region_ends[index] = pos + region_length as i64 - 1;
+
+            let mut is_negative_strand = false;
+
+            if record.strand().as_ref() == "-" {
+                is_negative_strand = true;
+            }
+            self.region_overlap_lookup_table.put_region(
+                record.start().get(),
+                record.end().get(),
+                record.reference_sequence_name(),
+                !is_negative_strand,
+            );
+            index += 1;
+        }
+        if regions_with_missing_chromosomes_count == self.num_of_selected_regions {
+            panic!("The feature file with regions can not be associated with the BAM file.\n
+            Please check, if the chromosome names match in the annotation file and the alignment file.");
+        } else if regions_with_missing_chromosomes_count > 0 {
+            println!(
+                "{} regions were skipped because chromosome name was not found in the BAM file.",
+                regions_with_missing_chromosomes_count
+            );
+        }
+        Ok(())
+    }
+
+    fn load_gtf_regions(&mut self) -> io::Result<()> {
+        let mut regions_with_missing_chromosomes_count = 0;
+
+        let mut reader = File::open(&self.feature_file)
+            .map(BufReader::new)
+            .map(gtf::Reader::new)?;
+        println!("Initializing regions from {}.....", &self.feature_file);
+        for result in reader.records() {
+            let _ = result?;
+            self.num_of_selected_regions += 1;
+        }
+        if self.num_of_selected_regions == 0 {
+            panic!("Failed to load selected regions.");
+        }
+        println!("Found {} regions", self.num_of_selected_regions);
+
+        self.selected_region_starts = vec![0; self.num_of_selected_regions];
+        self.selected_region_ends = vec![0; self.num_of_selected_regions];
+
+        println!("Filling region references... ");
+        reader = File::open(&self.feature_file)
+            .map(BufReader::new)
+            .map(gtf::Reader::new)?;
+        let mut pos = -1;
+        let mut index = 0;
+
+        for result in reader.records() {
+            let record = result?;
+            pos = self.locator.get_absolute_coordinates(
+                record.reference_sequence_name(),
+                record.start().get() as i32,
+            );
+            if pos == -1 {
+                self.selected_region_starts[index] = -1;
+                self.selected_region_ends[index] = -1;
+                regions_with_missing_chromosomes_count += 1;
+                continue;
+            }
+
+            let region_length = record.end().get() - record.start().get() + 1;
+            self.selected_region_starts[index] = pos;
+            self.selected_region_ends[index] = pos + region_length as i64 - 1;
+
+            let mut is_negative_strand = false;
+
+            if record.strand().is_some() && record.strand().unwrap().as_ref() == "-" {
+                is_negative_strand = true;
+            }
+            self.region_overlap_lookup_table.put_region(
+                record.start().get(),
+                record.end().get(),
+                record.reference_sequence_name(),
+                !is_negative_strand,
+            );
+            index += 1;
+        }
+        if regions_with_missing_chromosomes_count == self.num_of_selected_regions {
+            panic!("The feature file with regions can not be associated with the BAM file.\n
+                Please check, if the chromosome names match in the annotation file and the alignment file.");
+        } else if regions_with_missing_chromosomes_count > 0 {
+            println!(
+                "{} regions were skipped because chromosome name was not found in the BAM file.",
+                regions_with_missing_chromosomes_count
+            );
+        }
+        Ok(())
+    }
+
+    fn load_selected_regions(&mut self) -> io::Result<()> {
+        let gff_re = Regex::new(r"\.gff$").unwrap();
+        let gtf_re = Regex::new(r"\.gtf$").unwrap();
+        let bed_re = Regex::new(r"\.bed$").unwrap();
+
+        if bed_re.is_match(&self.feature_file) {
+            self.load_bed_regions();
+        } else if gff_re.is_match(&self.feature_file) {
+            self.load_gff_regions();
+        } else if gtf_re.is_match(&self.feature_file) {
+            self.load_gtf_regions();
+        } else {
+            panic!("Unknown feature file format. Please provide file in GFF/GTF or BED format.")
+        }
+
+        unsafe {
+            SELECTED_REGION_STARTS = self.selected_region_starts.clone();
+            SELECTED_REGION_ENDS = self.selected_region_ends.clone();
+        }
+
+        Ok(())
+    }
+
     pub fn run(&mut self) {
         let start_time = Instant::now();
-        // let mut worker_thread_pool = Executors::new_fixed_thread_pool(self.thread_number as u32)
-        //     .expect("Failed to create the thread pool");
 
         self.load_and_init();
         println!("Time to init: {:?}", Instant::now() - start_time);
 
-        // run reads
-        // todo!()        results = new ArrayList<Future<ProcessBunchOfReadsTask.Result>>(); timeToCalcOverlappers = 0;
         let mut bam_reader = Reader::from_path(&self.bam_file).unwrap();
+        let thread_pool = tpool::ThreadPool::new(num_cpus::get() as u32).unwrap();
+        bam_reader.set_thread_pool(&thread_pool);
+
         let mut record = Record::new();
         let mut process_time = Duration::seconds(0);
         let mut time_to_finalize_and_get_next_window = Duration::seconds(0);
         let mut time_to_analyze_reads_bunch = Duration::seconds(0);
         let mut time_to_finish_reads_bunch = Duration::seconds(0);
         let mut time_to_task_run = Duration::seconds(0);
+        let mut inner_circle = Duration::seconds(0);
+        let mut reads_bunch: Vec<BamRecord> = Vec::with_capacity(self.num_reads_in_bunch as usize);
         while let Some(result) = bam_reader.read(&mut record) {
+            let inner_circle_start = Instant::now();
             match result {
                 Ok(_) => {
                     let start_time = Instant::now();
                     self.process_sequence(
                         &record,
+                        &mut reads_bunch,
                         &mut time_to_finalize_and_get_next_window,
                         &mut time_to_analyze_reads_bunch,
                         &mut time_to_finish_reads_bunch,
@@ -3928,22 +4370,24 @@ impl BamStatsAnalysis {
                     self.number_of_problematic_reads += 1;
                 }
             }
+            inner_circle += Instant::now() - inner_circle_start;
         }
+        println!(
+            "Time to read from bam files: {:?}",
+            Instant::now() - start_time - inner_circle
+        );
 
-        let bam_stats_old = self.bam_stats.clone().unwrap();
         let last_process_start = Instant::now();
-        if !self.reads_bunch.is_empty()
-            || bam_stats_old.get_number_of_processed_windows()
-                < bam_stats_old.get_number_of_windows()
-        {
-            let num_windows = bam_stats_old.get_number_of_windows();
-            let last_position = bam_stats_old.get_window_end(num_windows as usize - 1) + 1;
+        let number_of_processed_windows = unsafe { NUMBER_OF_PROCESSED_WINDOWS };
+        if reads_bunch.is_empty() || number_of_processed_windows < self.effective_number_of_window {
+            let num_windows = self.effective_number_of_window;
+            let last_position = unsafe { WINDOW_ENDS[num_windows as usize - 1] + 1 };
             self.collect_analysis_results(
+                &mut reads_bunch,
                 &mut time_to_analyze_reads_bunch,
                 &mut time_to_finish_reads_bunch,
                 &mut time_to_task_run,
             );
-
             //finalize
             self.finalize_and_get_next_window(
                 last_position,
@@ -3952,10 +4396,15 @@ impl BamStatsAnalysis {
             );
 
             if self.selected_regions_available_flag && self.compute_outside_stats_flag {
-                self.current_outside_window
-                    .as_mut()
-                    .unwrap()
-                    .inverse_regions();
+                // add lock
+                let mut open_outside_windows = OPEN_OUTSIDE_WINDOWS.lock().unwrap();
+                let current_outside_window = open_outside_windows
+                    .get_mut(&self.current_outside_window_start)
+                    .unwrap();
+                current_outside_window.inverse_regions();
+                // release lock
+                drop(open_outside_windows);
+
                 self.finalize_and_get_next_outside_window(last_position, true);
             }
         }
@@ -3971,17 +4420,10 @@ impl BamStatsAnalysis {
         println!("Time to finish bunch: {:?}", time_to_finish_reads_bunch);
         println!("Time to task run: {:?}", time_to_task_run);
 
-        // todo!() delete worker thread pool
-        // workerThreadPool.shutdown();
-        // workerThreadPool.awaitTermination(2, TimeUnit.MINUTES);
-
-        let end_time = Instant::now();
-
         let bam_stats_final = self.bam_stats.as_mut().unwrap();
-        println!(
-            "Total processed windows:{}",
-            bam_stats_final.get_number_of_processed_windows()
-        );
+        println!("Total processed windows:{}", unsafe {
+            NUMBER_OF_PROCESSED_WINDOWS
+        });
         println!("Number of reads: {}", self.number_of_reads);
         println!("Number of valid reads: {}", self.number_of_valid_reads);
         println!(
@@ -4015,8 +4457,6 @@ impl BamStatsAnalysis {
             println!("{}", self.outside_bam_stats_collector.report());
         }
 
-        println!("Time taken to analyze reads: {:?}", end_time - start_time);
-
         if self.number_of_reads == 0 {
             panic!("The BAM file is empty or corrupt")
         }
@@ -4029,9 +4469,7 @@ impl BamStatsAnalysis {
         );
         bam_stats_final.number_of_secondary_alignments = self.number_of_secondary_alignments as i64;
         if self.skip_detected_duplicates_flag && self.number_of_duplicates_skip == 0 {
-            // Todo!();
-            // bamStats.addWarning(WARNING_NO_MARKED_DUPLICATES,
-            //     "Make sure duplicate alignments are flagged in the BAM file or apply a different skip duplicates mode.");
+            println!("WARNING: make sure duplicate alignments are flagged in the BAM file or apply a different skip duplicates mode.")
         }
 
         let mut total_number_of_mapped_reads = self.bam_stats_collector.get_num_mapped_reads();
@@ -4047,6 +4485,7 @@ impl BamStatsAnalysis {
 
         if self.selected_regions_available_flag {
             bam_stats_final.num_selected_regions = self.num_of_selected_regions as i32;
+
             if self.compute_outside_stats_flag {
                 // Size was calculated two times during the analysis
                 self.inside_reference_sizes = self.inside_reference_sizes / 2;
@@ -4066,8 +4505,8 @@ impl BamStatsAnalysis {
             // update totals from outside collectors
             total_number_of_mapped_reads = total_number_of_mapped_reads
                 + self.outside_bam_stats_collector.get_num_mapped_reads();
-            total_number_of_paired_reads =
-                total_number_of_paired_reads + self.bam_stats_collector.get_num_paired_reads();
+            total_number_of_paired_reads = total_number_of_paired_reads
+                + self.outside_bam_stats_collector.get_num_paired_reads();
             total_number_of_mapped_first_of_pair = total_number_of_mapped_first_of_pair
                 + self
                     .outside_bam_stats_collector
@@ -4117,14 +4556,70 @@ impl BamStatsAnalysis {
             bam_stats_final.compute_histograms();
         } else {
             println!("\nWARNING: number of mapped reads equals zero");
-            // todo()!
-            // bamStats.addWarning(WARNING_ID_NO_MAPPED_READS, "Total number of mapped reads or mapped reads in region equals zero.\n" +
-            // "For more details, check the number of Unmapped reads.");
+            println!(
+                "Total number of mapped reads or mapped reads in region equals zero.\n
+                        For more details, check the number of Unmapped reads."
+            );
         }
 
         if self.selected_regions_available_flag && self.compute_outside_stats_flag {
-            // Todo()!
-            // outside_bam_stats
+            let outside_bam_stats_final = self.outside_bam_stats.as_mut().unwrap();
+            outside_bam_stats_final.reference_size = self.reference_size;
+            outside_bam_stats_final.number_of_reference_contigs =
+                self.locator.get_contigs().len() as i64;
+            outside_bam_stats_final.num_selected_regions = self.num_of_selected_regions as i32;
+            outside_bam_stats_final.in_region_reference_size =
+                self.reference_size as i64 - self.inside_reference_sizes as i64;
+
+            outside_bam_stats_final.number_of_reads = self.number_of_reads as i64;
+            outside_bam_stats_final.number_of_secondary_alignments =
+                self.number_of_secondary_alignments as i64;
+
+            outside_bam_stats_final.number_of_mapped_reads = total_number_of_mapped_reads as i64;
+            outside_bam_stats_final.number_of_paired_reads = total_number_of_paired_reads as i64;
+            outside_bam_stats_final.number_of_mapped_first_of_pair =
+                total_number_of_mapped_first_of_pair as i64;
+            outside_bam_stats_final.number_of_mapped_second_of_pair =
+                total_number_of_mapped_second_of_pair as i64;
+            outside_bam_stats_final.number_of_singletons = total_number_of_singletons as i64;
+
+            // set bam_stats with metrics inside of region
+            outside_bam_stats_final.number_of_mapped_reads_in_regions =
+                self.outside_bam_stats_collector.get_num_mapped_reads() as i64;
+            outside_bam_stats_final.number_of_paired_reads_in_regions =
+                self.outside_bam_stats_collector.get_num_paired_reads() as i64;
+            outside_bam_stats_final.number_of_mapped_first_of_pair_in_regions =
+                self.outside_bam_stats_collector
+                    .get_num_mapped_first_in_pair() as i64;
+            outside_bam_stats_final.number_of_mapped_second_of_pair_in_regions =
+                self.outside_bam_stats_collector
+                    .get_num_mapped_second_in_pair() as i64;
+            outside_bam_stats_final.number_of_singletons_in_regions =
+                self.outside_bam_stats_collector.get_num_singletons() as i64;
+
+            outside_bam_stats_final.read_max_size = self.max_read_size as i32;
+            outside_bam_stats_final.read_min_size = self.min_read_size as i32;
+            outside_bam_stats_final.read_mean_size =
+                self.acum_read_size as f64 / self.number_of_reads as f64;
+
+            outside_bam_stats_final.num_detected_duplicate_reads =
+                self.outside_bam_stats_collector.num_marked_duplicates;
+
+            if self.outside_bam_stats_collector.get_num_mapped_reads() > 0 {
+                println!("Computing descriptors for outside regions...");
+                outside_bam_stats_final.compute_descriptors();
+                println!("Computing per chromosome statistics for outside regions...");
+                outside_bam_stats_final
+                    .compute_chromosome_stats(&self.locator, &self.chromosome_window_indexes);
+                println!("Computing histograms for outside regions...");
+                outside_bam_stats_final.compute_histograms();
+            } else {
+                println!("\nWARNING: number of mapped reads outside of regions equals zero");
+                println!(
+                    "Total number of mapped reads or mapped reads outside of  region equals zero.\n
+                                For more details, check the number of Unmapped reads."
+                );
+            }
         }
 
         let overall_time = Instant::now();
@@ -4134,14 +4629,12 @@ impl BamStatsAnalysis {
     pub fn process_sequence(
         &mut self,
         record: &Record,
+        reads_bunch: &mut Vec<BamRecord>,
         time_to_finalize_and_get_next_window: &mut Duration,
         time_to_analyze_reads_bunch: &mut Duration,
         time_to_finish_reads_bunch: &mut Duration,
         time_to_task_run: &mut Duration,
     ) {
-        let bam_stats = self.bam_stats.as_mut().unwrap();
-        let current_window = self.current_window.as_ref().unwrap();
-
         let contig_id = record.tid();
         let contig_option = self.locator.get_contig(contig_id as usize);
         // compute absolute position
@@ -4152,7 +4645,6 @@ impl BamStatsAnalysis {
                 .locator
                 .get_absolute_coordinates(contig.name(), record.pos() as i32 + 1);
         }
-        // println!("position: {}", absolute_position);
 
         //compute read size
         let read_size = record.seq_len();
@@ -4169,12 +4661,12 @@ impl BamStatsAnalysis {
             return;
         }
 
-        let novel_read_flag = (record.flags() & Constants::SAM_FLAG_SUPP_ALIGNMENT as u16) == 0;
+        let novel_read_flag =
+            (record.flags() & QualimapConstants::SAM_FLAG_SUPP_ALIGNMENT as u16) == 0;
         if novel_read_flag {
             self.number_of_reads += 1;
         }
 
-        // record.is_quality_check_failed()
         // filter invalid reads
         let read_is_valid: bool = !record.is_quality_check_failed();
         if read_is_valid {
@@ -4188,15 +4680,69 @@ impl BamStatsAnalysis {
                 insert_size = record.insert_size()
             }
 
-            if absolute_position < current_window.get_window_start() {
+            if absolute_position < self.current_window_start {
                 panic!("The alignment file is unsorted.\nPlease sort the BAM file by coordinate.");
             }
 
-            // let find_overlappers_start = Instant::now();
+            let mut bam_record = BamRecord::new(record.to_owned());
+
             if self.selected_regions_available_flag {
-                // todo!()
+                let read_overlaps_regions_flag = self.judge_read_overlap_regions(record);
+                if read_overlaps_regions_flag {
+                    // set in region flag
+                    bam_record.set_in_region_flag(true);
+
+                    let bam_stats = self.bam_stats.as_mut().unwrap();
+                    if self
+                        .bam_stats_collector
+                        .update_stats_and_judge_is_dup(record)
+                        && self.skip_marked_duplicates_flag
+                    {
+                        self.number_of_duplicates_skip += 1;
+                        return;
+                    }
+
+                    if bam_stats
+                        .update_read_start_histogram_and_judge_is_detected_dup(absolute_position)
+                        && self.skip_detected_duplicates_flag
+                    {
+                        self.number_of_duplicates_skip += 1;
+                        return;
+                    }
+                    if self.collect_intersecting_paired_end_reads_flag {
+                        self.bam_stats_collector.collect_paired_read_info(record);
+                    }
+
+                    bam_stats.update_insert_size_histogram(insert_size as i32);
+                } else {
+                    // set out of region flag
+                    bam_record.set_in_region_flag(false);
+
+                    let outside_bam_stats = self.outside_bam_stats.as_mut().unwrap();
+                    if self
+                        .outside_bam_stats_collector
+                        .update_stats_and_judge_is_dup(record)
+                        && self.skip_marked_duplicates_flag
+                    {
+                        self.number_of_duplicates_skip += 1;
+                        return;
+                    }
+                    if self.compute_outside_stats_flag {
+                        if outside_bam_stats.update_read_start_histogram_and_judge_is_detected_dup(
+                            absolute_position,
+                        ) && self.skip_detected_duplicates_flag
+                        {
+                            self.number_of_duplicates_skip += 1;
+                            return;
+                        }
+                        outside_bam_stats.update_insert_size_histogram(insert_size as i32);
+                    }
+                }
             } else {
-                // read.setAttribute(Constants.READ_IN_REGION, 0);
+                // set in region flag
+                bam_record.set_in_region_flag(true);
+
+                let bam_stats = self.bam_stats.as_mut().unwrap();
                 if self
                     .bam_stats_collector
                     .update_stats_and_judge_is_dup(record)
@@ -4214,19 +4760,16 @@ impl BamStatsAnalysis {
                     return;
                 }
                 if self.collect_intersecting_paired_end_reads_flag {
-                    // todo()! finished
                     self.bam_stats_collector.collect_paired_read_info(record);
                 }
                 bam_stats.update_insert_size_histogram(insert_size as i32);
             }
 
-            // self.time_to_calc_overlappers = std::time::Instant::now() - find_overlappers_start;
-
             // finalize current and get next window
-            if absolute_position > current_window.get_window_end() {
-                // println!("branch 1");
+            if absolute_position > self.current_window_end {
                 //analyzeReads(readsBunch);
                 self.collect_analysis_results(
+                    reads_bunch,
                     time_to_analyze_reads_bunch,
                     time_to_finish_reads_bunch,
                     time_to_task_run,
@@ -4240,42 +4783,87 @@ impl BamStatsAnalysis {
                 );
 
                 if self.selected_regions_available_flag && self.compute_outside_stats_flag {
-                    self.current_outside_window
-                        .as_mut()
-                        .unwrap()
-                        .inverse_regions();
+                    // add lock
+                    let mut open_outside_windows = OPEN_OUTSIDE_WINDOWS.lock().unwrap();
+                    let current_outside_window = open_outside_windows
+                        .get_mut(&self.current_outside_window_start)
+                        .unwrap();
+                    current_outside_window.inverse_regions();
+                    // release lock
+                    drop(open_outside_windows);
+
                     self.finalize_and_get_next_outside_window(absolute_position, true);
                 }
             }
 
-            if self.current_window.is_none() {
+            if self.current_window_start == -1 {
                 //Some reads are out of reference bounds?
                 return;
             }
-            // todo!() that clone costs a lot of time
-            self.reads_bunch.push(record.clone());
+            reads_bunch.push(bam_record);
 
-            if self.reads_bunch.len() >= self.num_reads_in_bunch as usize {
-                // println!("branch 2");
-                // if self.results.len() >= self.max_size_of_task_queue {
-                //     self.collect_analysis_results(
-                //         time_to_analyze_reads_bunch,
-                //         time_to_finish_reads_bunch,
-                //         time_to_task_run,
-                //     );
-                // } else {
-                //     self.analyze_reads_bunch(time_to_task_run, time_to_analyze_reads_bunch);
-                // }
-                self.collect_analysis_results(
-                    time_to_analyze_reads_bunch,
-                    time_to_finish_reads_bunch,
-                    time_to_task_run,
-                );
+            if reads_bunch.len() >= self.num_reads_in_bunch as usize {
+                if self.results.len() >= self.max_size_of_task_queue {
+                    self.collect_analysis_results(
+                        reads_bunch,
+                        time_to_analyze_reads_bunch,
+                        time_to_finish_reads_bunch,
+                        time_to_task_run,
+                    );
+                } else {
+                    self.analyze_reads_bunch(
+                        reads_bunch,
+                        time_to_task_run,
+                        time_to_analyze_reads_bunch,
+                    );
+                }
             }
 
             self.number_of_valid_reads += 1;
         } else {
             self.number_of_problematic_reads += 1;
+        }
+    }
+
+    fn judge_read_overlap_regions(&mut self, read: &Record) -> bool {
+        let contig_id = read.tid();
+        let contig = self.locator.get_contig(contig_id as usize).unwrap();
+
+        if self.protocol == LibraryProtocol::NonStrandSpecific {
+            return self.region_overlap_lookup_table.overlaps(
+                read.pos() as usize + 1,
+                read.cigar().end_pos() as usize,
+                contig.name(),
+            );
+        } else {
+            let read_has_forward_strand = !read.is_reverse();
+            let forward_transcript_strand_is_expected = match (read.is_paired(), &self.protocol) {
+                (true, LibraryProtocol::StrandSpecificForward) => {
+                    (read.is_first_in_template() && read_has_forward_strand)
+                        || (read.is_last_in_template() && !read_has_forward_strand)
+                }
+                (true, LibraryProtocol::StrandSpecificReverse) => {
+                    (read.is_first_in_template() && !read_has_forward_strand)
+                        || (read.is_last_in_template() && read_has_forward_strand)
+                }
+                _ => {
+                    self.protocol == LibraryProtocol::StrandSpecificForward
+                        && read_has_forward_strand
+                }
+            };
+
+            let overlap_result = self.region_overlap_lookup_table.overlaps_with_strand(
+                read.pos() as usize + 1,
+                read.cigar().end_pos() as usize,
+                contig.name(),
+                forward_transcript_strand_is_expected,
+            );
+
+            if overlap_result.is_strand_matches() {
+                self.number_of_correct_strand_reads += 1;
+            }
+
+            return overlap_result.is_interval_overlap();
         }
     }
 
@@ -4285,145 +4873,145 @@ impl BamStatsAnalysis {
         detailed_flag: bool,
         time_to_finalize_and_get_next_window: &mut Duration,
     ) {
-        // let mut last_window = self.current_window.as_ref().unwrap();
-        while position > self.current_window.as_ref().unwrap().get_window_end() {
+        let mut current_window_end = self.current_window_end;
+        while position > current_window_end {
             let finalize_and_get_next_start = Instant::now();
-            self.finalize_window(); // bamstats and current window has been updated in this function
+            // bamstats and current window has been updated in this function
+            self.finalize_window();
             *time_to_finalize_and_get_next_window += Instant::now() - finalize_and_get_next_start;
-            self.current_window = self.next_window(detailed_flag); // update current window
-            if self.current_window.is_none() {
+            // update current window
+            self.next_window(detailed_flag);
+
+            if self.current_window_start == -1 {
                 break;
             }
+            current_window_end = self.current_window_end;
         }
     }
 
     fn finalize_and_get_next_outside_window(&mut self, position: i64, detailed_flag: bool) {
-        // let mut last_window = self.current_window.as_ref().unwrap();
-        while position
-            > self
-                .current_outside_window
-                .as_ref()
-                .unwrap()
-                .get_window_end()
-        {
-            self.finalize_outside_window(); // bamstats and current window has been updated in this function
-            self.current_outside_window = self.next_outside_window(detailed_flag);
-            if self.current_outside_window.is_none() {
+        let mut current_outside_window_end = self.current_outside_window_end;
+        while position > current_outside_window_end {
+            // bamstats and current window has been updated in this function
+            self.finalize_outside_window();
+            // update current outside window
+            self.next_outside_window(detailed_flag);
+
+            if self.current_outside_window_start == -1 {
                 break;
             }
+            current_outside_window_end = self.current_outside_window_end;
         }
     }
 
     fn finalize_window(&mut self) {
-        // todo!() multi thread
-        // if (finalizeWindowResult != null) {
-        //     // We only run finalization of one window in parallel to prevent to many open windows
-        //     finalizeWindowResult.get();
-        // }
         let bam_stats = self.bam_stats.as_mut().unwrap();
-        let window_start = bam_stats.get_current_window_start();
 
-        // update self.current window
-        let window = self.open_windows.get_mut(&window_start).unwrap().clone();
-        self.current_window = Some(window);
+        let mut finalize_window_task =
+            FinalizeWindowTask::new(bam_stats, self.current_window_start);
+        self.finalize_window_result = finalize_window_task.run_inside();
 
-        // remove the finished window
-        self.open_windows.remove(&window_start);
-        bam_stats.inc_processed_windows();
+        unsafe {
+            NUMBER_OF_PROCESSED_WINDOWS += 1;
 
-        // report progress
-        let num_processed_windows = bam_stats.get_number_of_processed_windows();
-        if num_processed_windows as usize % self.window_block_size_to_report == 0 {
-            println!(
-                "Processed {} out of {} windows...",
-                { num_processed_windows },
-                { self.effective_number_of_window }
-            );
+            // report progress
+            let num_processed_windows = NUMBER_OF_PROCESSED_WINDOWS;
+            if num_processed_windows as usize % self.window_block_size_to_report == 0 {
+                println!(
+                    "Processed {} out of {} windows...",
+                    { num_processed_windows },
+                    { self.effective_number_of_window }
+                );
+            }
         }
-
-        //System.out.println("Time taken to count overlappers: " + timeToCalcOverlappers);
         self.time_to_calc_overlappers = 0;
 
-        // todo!() create a thread to handle Final window task
-        let mut finalize_window_task =
-            FinalizeWindowTask::new(bam_stats, self.current_window.as_mut().unwrap());
-        self.finalize_window_result = finalize_window_task.run();
+        // remove the finished window
+        OPEN_WINDOWS
+            .lock()
+            .unwrap()
+            .remove(&self.current_window_start);
     }
 
     fn finalize_outside_window(&mut self) {
-        // todo!() multi thread
-        // if (finalizeWindowResult != null) {
-        //     // We only run finalization of one window in parallel to prevent to many open windows
-        //     finalizeWindowResult.get();
-        // }
-        let bam_stats = self.outside_bam_stats.as_mut().unwrap();
-        let window_start = bam_stats.get_current_window_start();
+        let outside_bam_stats = self.outside_bam_stats.as_mut().unwrap();
 
-        // update self.current window
-        let window = self
-            .open_outside_windows
-            .get_mut(&window_start)
-            .unwrap()
-            .clone();
-        self.current_outside_window = Some(window);
+        let mut finalize_window_task =
+            FinalizeWindowTask::new(outside_bam_stats, self.current_outside_window_start);
+        self.finalize_window_result = finalize_window_task.run_outside();
 
-        // remove the finished window
-        self.open_outside_windows.remove(&window_start);
-        bam_stats.inc_processed_windows();
-
-        // report progress
-        let num_processed_windows = bam_stats.get_number_of_processed_windows();
-        if num_processed_windows as usize % self.window_block_size_to_report == 0 {
-            println!(
-                "Processed {} out of {} windows...",
-                { num_processed_windows },
-                { self.effective_number_of_window }
-            );
+        unsafe {
+            NUMBER_OF_PROCESSED_OUTSIDE_WINDOWS += 1;
         }
 
-        //System.out.println("Time taken to count overlappers: " + timeToCalcOverlappers);
-        self.time_to_calc_overlappers = 0;
-
-        // todo!() create a thread to handle Final window task
-        let mut finalize_window_task =
-            FinalizeWindowTask::new(bam_stats, self.current_outside_window.as_mut().unwrap());
-        self.finalize_window_result = finalize_window_task.run();
+        // remove the finished window
+        OPEN_OUTSIDE_WINDOWS
+            .lock()
+            .unwrap()
+            .remove(&self.current_outside_window_start);
     }
 
     fn collect_analysis_results(
         &mut self,
+        reads_bunch: &mut Vec<BamRecord>,
         time_to_analyze_reads_bunch: &mut Duration,
         time_to_finish_reads_bunch: &mut Duration,
         time_to_task_run: &mut Duration,
     ) {
         // start last bunch
-        self.analyze_reads_bunch(time_to_task_run, time_to_analyze_reads_bunch);
+        self.analyze_reads_bunch(reads_bunch, time_to_task_run, time_to_analyze_reads_bunch);
 
         let finsih_task_start = Instant::now();
-        // wait till all tasks are finished
-        for task_result in &self.results {
-            let data_sets = task_result.get_read_alignment_data();
 
+        let mut number_of_reads_with_start_greater_than_end = 0;
+        // wait till all tasks are finished
+        for future_result in &self.results {
+            let task_result = future_result.get().expect("Couldn't get a result");
+            // todo!() merge insert size may have a bug caused by boundary
+            let mut open_windows = OPEN_WINDOWS.lock().unwrap();
+            let mut open_outside_windows = OPEN_OUTSIDE_WINDOWS.lock().unwrap();
+            let current_window = open_windows.get_mut(&self.current_window_start).unwrap();
+            current_window.merge_insert_size(
+                task_result.correct_insert_sizes,
+                task_result.acum_insert_size,
+            );
+            // acum reads with start greater than end in a task
+            number_of_reads_with_start_greater_than_end +=
+                task_result.number_of_reads_with_start_greater_than_end;
+
+            let data_sets = task_result.get_read_alignment_data();
+            // self.merge_number_of_reads_with_start_greater_then_end()
             for single_read_data in data_sets {
                 let window_start = single_read_data.get_window_start();
-                let window = self.open_windows.get_mut(&window_start).unwrap();
-
+                let window = open_windows.get_mut(&window_start).unwrap();
                 window.add_read_alignment_data(single_read_data);
             }
 
+            // update bam stats infomation from single read data
             self.bam_stats
                 .as_mut()
                 .unwrap()
                 .add_read_stats_data(task_result.get_read_stats_collector());
+
             if self.selected_regions_available_flag && self.compute_outside_stats_flag {
                 let outside_data_sets = task_result.get_out_of_region_reads_data();
+                // update window infomation from single read data
                 for single_read_data in outside_data_sets {
                     let window_start = single_read_data.get_window_start();
-                    let window = self.open_outside_windows.get_mut(&window_start).unwrap();
+                    let window = open_outside_windows.get_mut(&window_start).unwrap();
                     window.add_read_alignment_data(single_read_data);
                 }
+                // update bam stats infomation from single read data
+                self.outside_bam_stats
+                    .as_mut()
+                    .unwrap()
+                    .add_read_stats_data(task_result.get_out_region_read_stats_collector());
             }
         }
+        // update number_of_reads_with_start_greater_than_end
+        self.merge_number_of_reads_with_start_greater_then_end(
+            number_of_reads_with_start_greater_than_end,
+        );
 
         self.results.clear();
         *time_to_finish_reads_bunch += Instant::now() - finsih_task_start;
@@ -4431,45 +5019,42 @@ impl BamStatsAnalysis {
 
     fn analyze_reads_bunch(
         &mut self,
+        reads_bunch: &mut Vec<BamRecord>,
         time_to_task_run: &mut Duration,
         time_to_analyze_reads_bunch: &mut Duration,
     ) {
         let last_bunch_start = Instant::now();
-
-        let copy_bunch = self.reads_bunch.clone();
-
         let locator = self.locator.clone();
         let selected_region_flag = self.get_selected_regions_available_flag();
         let compute_outside_stats_flag = self.get_compute_outside_stats_flag();
         let min_homopolymer_size = self.get_min_homopolymer_size();
-        // let arc_mutex_self = Arc::new(Mutex::new(self.borrow_mut()));
+
+        let current_window_start = self.current_window_start;
+        let current_window_end = self.current_window_end;
+        let current_window_region = self.current_window_region.as_ref().unwrap().clone();
+
+        let reads_bunch_copy = reads_bunch.clone();
         let mut task = ProcessBunchOfReadsTask::new(
-            copy_bunch,
             selected_region_flag,
             compute_outside_stats_flag,
             min_homopolymer_size,
             locator,
-            self,
+            current_window_start,
+            current_window_end,
+            current_window_region,
         );
-        // let task_run_start = Instant::now();
-        let task_result = task.run(time_to_task_run);
-        // *time_to_task_run += Instant::now() - task_run_start;
-        // let the_future = executor_service
-        //     .submit_async(Box::new(move || {
-        //         let mut task_result = task.run();
-        //         println!("Long lasting computation finished");
-        //         task_result
-        //     }))
-        //     .expect("Failed to submit function");
-        // the_future.get();
-        // let mut taks_result = task.run();
-        self.results.push(task_result);
-        self.reads_bunch.clear();
+        let future_result = self
+            .thread_pool
+            .submit_async(Box::new(move || task.run(reads_bunch_copy)))
+            .expect("Failed to submit function");
+
+        self.results.push(future_result);
+
+        reads_bunch.clear();
         *time_to_analyze_reads_bunch += Instant::now() - last_bunch_start;
     }
 
-    fn load_locator(&mut self, header: &Header) {
-        let hash_header = self.to_hashmap(&header);
+    fn load_locator(&mut self, hash_header: &HashMap<String, Vec<LinearMap<String, String>>>) {
         if hash_header.contains_key("SQ") {
             let sq_records = &hash_header["SQ"];
             for record in sq_records {
@@ -4480,8 +5065,10 @@ impl BamStatsAnalysis {
         }
     }
 
-    fn load_program_records(&mut self, header: &Header) {
-        let hash_header = self.to_hashmap(&header);
+    fn load_program_records(
+        &mut self,
+        hash_header: &HashMap<String, Vec<LinearMap<String, String>>>,
+    ) {
         if hash_header.contains_key("PG") {
             let pg_records = &hash_header["PG"];
             if !pg_records.is_empty() {
@@ -4519,7 +5106,7 @@ impl BamStatsAnalysis {
 
     fn compute_window_positions(&mut self, window_size: i32) -> Vec<i64> {
         let contigs = self.locator.get_contigs();
-        let mut window_starts: Vec<i64> = Vec::new();
+        let mut window_starts: Vec<i64> = vec![];
 
         let mut start_pos = 1;
         let mut i = 0;
@@ -4547,112 +5134,94 @@ impl BamStatsAnalysis {
         window_starts
     }
 
-    fn next_window(&mut self, detailed_flag: bool) -> Option<BamGenomeWindow> {
-        // init new current
-        let mut new_current = None;
+    fn next_window(&mut self, detailed_flag: bool) {
+        // reset current window
+        self.current_window_start = -1;
+        self.current_window_end = -1;
 
         let bam_stats = self.bam_stats.as_mut().unwrap();
-        let num_processed_windows = bam_stats.get_number_of_processed_windows();
-        let num_total_windows = bam_stats.get_number_of_windows();
 
-        if num_processed_windows < num_total_windows {
-            let window_start = bam_stats.get_window_start(num_processed_windows as usize);
-            let window_end = bam_stats.get_current_window_end();
-            let reference_size = bam_stats.get_reference_size();
-            let current_window_name = bam_stats.get_current_window_name();
+        let mut open_windows = OPEN_WINDOWS.lock().unwrap();
 
-            if num_processed_windows < num_total_windows && window_start <= reference_size {
-                if self.open_windows.contains_key(&window_start) {
-                    let current_window = self
-                        .open_windows
-                        .get(&window_start)
-                        .as_deref()
-                        .unwrap()
-                        .clone();
-                    new_current = Some(current_window);
-                } else {
-                    bam_stats.increment_initialized_windows();
-                    let current_window = self.init_window(
-                        current_window_name,
-                        window_start,
-                        window_end.min(reference_size),
-                        detailed_flag,
-                    );
-                    self.open_windows
-                        .insert(window_start, current_window.clone());
-                    new_current = Some(current_window);
+        unsafe {
+            let num_processed_windows = NUMBER_OF_PROCESSED_WINDOWS;
+            let num_total_windows = NUMBER_OF_TOTAL_WINDOWS;
+            if num_processed_windows < num_total_windows {
+                let window_start = WINDOW_STARTS[num_processed_windows as usize];
+                let window_end = WINDOW_ENDS[num_processed_windows as usize];
+                let reference_size = bam_stats.get_reference_size();
+                let current_window_name = WINDOW_NANMES[num_processed_windows as usize].clone();
+
+                if window_start <= reference_size {
+                    if open_windows.contains_key(&window_start) {
+                        let window = open_windows.get(&window_start).unwrap();
+                        self.current_window_start = window_start;
+                        self.current_window_end = window_end;
+                        self.current_window_region = Some(window.get_region().clone());
+                    } else {
+                        NUMBER_OF_INITIALIZED_WINDOWS += 1;
+
+                        let current_window = BamGenomeWindow::init_window(
+                            current_window_name,
+                            window_start,
+                            window_end.min(reference_size),
+                            self.selected_regions_available_flag,
+                            detailed_flag,
+                        );
+                        self.current_window_region = Some(current_window.get_region().clone());
+                        open_windows.insert(window_start, current_window);
+                        self.current_window_start = window_start;
+                        self.current_window_end = window_end;
+                    }
                 }
             }
         }
-
-        new_current
     }
 
-    fn next_outside_window(&mut self, detailed_flag: bool) -> Option<BamGenomeWindow> {
-        // init new current
-        let mut new_outside_window = None;
+    fn next_outside_window(&mut self, detailed_flag: bool) {
+        self.current_outside_window_start = -1;
+        self.current_outside_window_end = -1;
 
-        let mut bam_stats = self.outside_bam_stats.as_mut().unwrap();
-        let num_processed_windows = bam_stats.get_number_of_processed_windows();
-        let num_total_windows = bam_stats.get_number_of_windows();
+        let bam_stats = self.outside_bam_stats.as_mut().unwrap();
 
-        if num_processed_windows < num_total_windows {
-            let window_start = bam_stats.get_window_start(num_processed_windows as usize);
-            let window_end = bam_stats.get_current_window_end();
-            let reference_size = bam_stats.get_reference_size();
-            let current_window_name = bam_stats.get_current_window_name();
+        let mut open_outside_windows = OPEN_OUTSIDE_WINDOWS.lock().unwrap();
 
-            if num_processed_windows < num_total_windows && window_start <= reference_size {
-                if self.open_outside_windows.contains_key(&window_start) {
-                    let current_window = self
-                        .open_outside_windows
-                        .get(&window_start)
-                        .unwrap()
-                        .clone();
-                    new_outside_window = Some(current_window);
-                } else {
-                    bam_stats.increment_initialized_windows();
-                    let current_window = self.init_window(
-                        current_window_name,
-                        window_start,
-                        window_end.min(reference_size),
-                        detailed_flag,
-                    );
-                    self.open_outside_windows
-                        .insert(window_start, current_window.clone());
-                    new_outside_window = Some(current_window);
+        unsafe {
+            let num_processed_windows = NUMBER_OF_PROCESSED_OUTSIDE_WINDOWS;
+            let num_total_windows = NUMBER_OF_TOTAL_WINDOWS;
+            if num_processed_windows < num_total_windows {
+                let window_start = WINDOW_STARTS[num_processed_windows as usize];
+                let window_end = WINDOW_ENDS[num_processed_windows as usize];
+                let reference_size = bam_stats.get_reference_size();
+                let current_window_name =
+                    OUTSIDE_WINDOW_NANMES[num_processed_windows as usize].clone();
+
+                if window_start <= reference_size {
+                    if open_outside_windows.contains_key(&window_start) {
+                        let outside_window = open_outside_windows.get(&window_start).unwrap();
+                        self.current_outside_window_start = window_start;
+                        self.current_outside_window_end = window_end;
+                        self.current_outside_window_region =
+                            Some(outside_window.get_region().clone());
+                    } else {
+                        NUMBER_OF_INITIALIZED_OUTSIDE_WINDOWS += 1;
+
+                        let current_outside_window = BamGenomeWindow::init_window(
+                            current_window_name,
+                            window_start,
+                            window_end.min(reference_size),
+                            self.selected_regions_available_flag,
+                            detailed_flag,
+                        );
+                        self.current_outside_window_region =
+                            Some(current_outside_window.get_region().clone());
+                        open_outside_windows.insert(window_start, current_outside_window);
+                        self.current_outside_window_start = window_start;
+                        self.current_outside_window_end = window_end;
+                    }
                 }
             }
         }
-
-        new_outside_window
-    }
-
-    fn init_window(
-        &mut self,
-        name: String,
-        window_start: i64,
-        window_end: i64,
-        detailed_flag: bool,
-    ) -> BamGenomeWindow {
-        let mut mini_reference: Vec<u8> = vec![];
-        if !self.reference.is_empty() {
-            mini_reference =
-                self.reference[(window_start - 1) as usize..(window_end - 1) as usize].to_vec()
-        }
-
-        let window = BamGenomeWindow::new(
-            name,
-            window_start,
-            window_end,
-            &mini_reference,
-            detailed_flag,
-        );
-
-        if self.selected_regions_available_flag {
-            // todo!()  calculateRegionsLookUpTableForWindow(w);
-        }
-        window
     }
 
     fn get_selected_regions_available_flag(&self) -> bool {
@@ -4699,65 +5268,8 @@ impl BamStatsAnalysis {
         None
     }
 
-    fn get_open_window(&mut self, window_start: i64) -> &BamGenomeWindow {
-        if self.open_windows.contains_key(&window_start) {
-            self.open_windows.get(&window_start).unwrap()
-        } else {
-            let bam_stats = self.get_mut_bam_stats().unwrap();
-            let num_init_windows = bam_stats.get_number_of_initialized_windows();
-            let window_name = bam_stats.get_window_name(num_init_windows as usize);
-            let window_end = bam_stats.get_window_end(num_init_windows as usize);
-            let reference_size = bam_stats.get_reference_size();
-            bam_stats.increment_initialized_windows();
-            let new_window = self.init_window(
-                window_name,
-                window_start,
-                window_end.min(reference_size),
-                true,
-            );
-
-            self.open_windows.insert(window_start, new_window);
-
-            self.open_windows.get(&window_start).unwrap()
-        }
-    }
-
-    fn get_outside_open_window(&mut self, window_start: i64) -> &BamGenomeWindow {
-        if self.open_outside_windows.contains_key(&window_start) {
-            self.open_outside_windows.get(&window_start).unwrap()
-        } else {
-            let bam_stats = self.get_mut_outside_bam_stats().unwrap();
-            let num_init_windows = bam_stats.get_number_of_initialized_windows();
-            let window_name = bam_stats.get_window_name(num_init_windows as usize);
-            let window_end = bam_stats.get_window_end(num_init_windows as usize);
-            let reference_size = bam_stats.get_reference_size();
-            bam_stats.increment_initialized_windows();
-            let new_window = self.init_window(
-                window_name,
-                window_start,
-                window_end.min(reference_size),
-                true,
-            );
-
-            self.open_outside_windows.insert(window_start, new_window);
-
-            self.open_outside_windows.get(&window_start).unwrap()
-        }
-    }
-
-    // fn get_current_window(&self) -> &Option<BamGenomeWindow> {
-    //     &self.current_window
-    // }
-
-    fn inc_number_of_reads_with_start_greater_then_end(&mut self) {
-        self.number_of_reads_with_start_greater_than_end += 1;
-    }
-
-    fn get_current_window(&self) -> Option<&BamGenomeWindow> {
-        if let Some(window) = &self.current_window {
-            return Some(window);
-        }
-        None
+    fn merge_number_of_reads_with_start_greater_then_end(&mut self, num_reads: usize) {
+        self.number_of_reads_with_start_greater_than_end += num_reads;
     }
 }
 
@@ -5146,6 +5658,554 @@ impl BasicStats {
     }
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DetailedStats {
+    // input
+    bam_file: String,
+
+    // reference
+    num_of_bases: usize,
+    num_of_contigs: usize,
+
+    // globals
+    num_of_windows: usize,
+    num_of_reads: usize,
+    num_of_mapped_reads: usize,
+    percent_of_mapped_reads: f64,
+    num_of_supplementary_alignments: usize,
+    percent_of_supplementary_alignments: f64,
+    num_of_second_alignments: usize,
+    num_of_paired_reads: usize,
+    num_of_mapped_reads_first_in_pair: usize,
+    num_of_mapped_reads_second_in_pair: usize,
+    num_of_mapped_reads_both_in_pair: usize,
+    num_of_mapped_reads_singletons: usize,
+    num_of_overlapping_reads: usize,
+    num_of_mapped_bases: usize,
+    num_of_sequenced_bases: usize,
+    num_of_aligned_bases: usize,
+
+    num_of_flagged_duplicate_reads: usize,
+    num_of_estimated_duplicate_reads: usize,
+    duplication_rate: f64,
+
+    // region
+    num_of_selected_regions: usize,
+    num_of_mapped_reads_in_regions: usize,
+
+    // insert size
+    mean_insert_size: f64,
+    std_insert_size: f64,
+    median_insert_size: usize,
+
+    // mapping quality
+    mean_mapping_quality: f64,
+
+    // ACTG content
+    num_of_as: usize,
+    percent_of_as: f64,
+    num_of_cs: usize,
+    percent_of_cs: f64,
+    num_of_ts: usize,
+    percent_of_ts: f64,
+    num_of_gs: usize,
+    percent_of_gs: f64,
+    num_of_ns: usize,
+    percent_of_ns: f64,
+    gc_content: f64,
+
+    // mismatches and indels
+    general_error_rate: f64,
+    num_of_indels: usize,
+    num_of_mismatches: usize,
+    num_of_insertions: usize,
+    num_of_deletions: usize,
+    mapped_reads_with_insertions_fraction: f64,
+    mapped_reads_with_deletion_fraction: f64,
+    homopolymer_indels_fraction: f64,
+
+    // Coverage
+    mean_coverage_data: f64,
+    std_coverage_data: f64,
+    num_overlap_reads_pairs: usize,
+    paired_end_adapted_mean_coverage: f64,
+    coverage_quotes: XYVector,
+    // Coverage per contig
+    chromosome_stats: Vec<ChromosomeInfo>,
+}
+
+impl DetailedStats {
+    pub fn new() -> Self {
+        Self {
+            // input
+            bam_file: "".to_string(),
+
+            // reference
+            num_of_bases: 0,
+            num_of_contigs: 0,
+
+            // globals
+            num_of_windows: 0,
+            num_of_reads: 0,
+            num_of_mapped_reads: 0,
+            percent_of_mapped_reads: 0.0,
+            num_of_supplementary_alignments: 0,
+            percent_of_supplementary_alignments: 0.0,
+            num_of_second_alignments: 0,
+            num_of_paired_reads: 0,
+            num_of_mapped_reads_first_in_pair: 0,
+            num_of_mapped_reads_second_in_pair: 0,
+            num_of_mapped_reads_both_in_pair: 0,
+            num_of_mapped_reads_singletons: 0,
+            num_of_overlapping_reads: 0,
+            num_of_mapped_bases: 0,
+            num_of_sequenced_bases: 0,
+            num_of_aligned_bases: 0,
+
+            num_of_flagged_duplicate_reads: 0,
+            num_of_estimated_duplicate_reads: 0,
+            duplication_rate: 0.0,
+
+            // region
+            num_of_selected_regions: 0,
+            num_of_mapped_reads_in_regions: 0,
+
+            // insert size
+            mean_insert_size: 0.0,
+            std_insert_size: 0.0,
+            median_insert_size: 0,
+
+            // mapping quality
+            mean_mapping_quality: 0.0,
+
+            // ACTG content
+            num_of_as: 0,
+            percent_of_as: 0.0,
+            num_of_cs: 0,
+            percent_of_cs: 0.0,
+            num_of_ts: 0,
+            percent_of_ts: 0.0,
+            num_of_gs: 0,
+            percent_of_gs: 0.0,
+            num_of_ns: 0,
+            percent_of_ns: 0.0,
+            gc_content: 0.0,
+
+            // mismatches and indels
+            general_error_rate: 0.0,
+            num_of_indels: 0,
+            num_of_mismatches: 0,
+            num_of_insertions: 0,
+            num_of_deletions: 0,
+            mapped_reads_with_insertions_fraction: 0.0,
+            mapped_reads_with_deletion_fraction: 0.0,
+            homopolymer_indels_fraction: 0.0,
+
+            // Coverage
+            mean_coverage_data: 0.0,
+            std_coverage_data: 0.0,
+            num_overlap_reads_pairs: 0,
+            paired_end_adapted_mean_coverage: 0.0,
+            coverage_quotes: XYVector::new(),
+            // Coverage per contig
+            chromosome_stats: vec![],
+        }
+    }
+
+    fn extract(&mut self, bam_stats: &BamStats) {
+        unsafe {
+            // input
+            self.bam_file = bam_stats.source_file.clone();
+
+            // reference
+            self.num_of_bases = bam_stats.reference_size as usize;
+            self.num_of_contigs = bam_stats.number_of_reference_contigs as usize;
+
+            // globals
+            self.num_of_windows = NUMBER_OF_TOTAL_WINDOWS as usize;
+            self.num_of_reads = bam_stats.number_of_reads as usize;
+            self.num_of_mapped_reads = bam_stats.number_of_mapped_reads as usize;
+            self.percent_of_mapped_reads = bam_stats.get_percentage_of_mapped_reads() as f64;
+            self.num_of_supplementary_alignments = bam_stats.number_of_supp_alignments as usize;
+            self.percent_of_supplementary_alignments =
+                bam_stats.get_percentage_of_supp_alignments() as f64;
+            self.num_of_second_alignments = bam_stats.number_of_secondary_alignments as usize;
+            self.num_of_paired_reads = bam_stats.number_of_paired_reads as usize;
+            self.num_of_mapped_reads_first_in_pair =
+                bam_stats.number_of_mapped_first_of_pair as usize;
+            self.num_of_mapped_reads_second_in_pair =
+                bam_stats.number_of_mapped_second_of_pair as usize;
+
+            self.num_of_mapped_reads_singletons = bam_stats.number_of_singletons as usize;
+            self.num_of_mapped_reads_both_in_pair =
+                self.num_of_paired_reads - self.num_of_mapped_reads_singletons;
+            self.num_of_overlapping_reads = bam_stats.num_overlapping_read_pairs as usize;
+            self.num_of_mapped_bases = bam_stats.number_of_mapped_bases as usize;
+            self.num_of_sequenced_bases = bam_stats.number_of_sequenced_bases as usize;
+            self.num_of_aligned_bases = bam_stats.number_of_aligned_bases as usize;
+
+            self.num_of_flagged_duplicate_reads = bam_stats.num_detected_duplicate_reads as usize;
+            self.num_of_estimated_duplicate_reads =
+                bam_stats.num_estimated_duplicate_reads as usize;
+            self.duplication_rate = bam_stats.duplication_rate;
+
+            // region
+            self.num_of_selected_regions = bam_stats.num_selected_regions as usize;
+            self.num_of_mapped_reads_in_regions =
+                bam_stats.number_of_mapped_reads_in_regions as usize;
+
+            // insert size
+            self.mean_insert_size = bam_stats.mean_insert_size;
+            self.std_insert_size = bam_stats.std_insert_size;
+            self.median_insert_size = bam_stats.median_insert_size as usize;
+
+            // mapping quality
+            self.mean_mapping_quality = bam_stats.mean_mapping_quality_per_window;
+
+            // ACTG content
+            self.num_of_as = bam_stats.number_of_as as usize;
+            self.num_of_cs = bam_stats.number_of_cs as usize;
+            self.num_of_ts = bam_stats.number_of_ts as usize;
+            self.num_of_gs = bam_stats.number_of_gs as usize;
+            self.num_of_ns = bam_stats.number_of_ns as usize;
+            self.percent_of_as = bam_stats.mean_a_relative_content;
+            self.percent_of_ts = bam_stats.mean_t_relative_content;
+            self.percent_of_cs = bam_stats.mean_c_relative_content;
+            self.percent_of_gs = bam_stats.mean_g_relative_content;
+            self.percent_of_ns = bam_stats.mean_n_relative_content;
+            self.gc_content = bam_stats.mean_gc_relative_content;
+
+            // mismatches and indels
+            self.general_error_rate = bam_stats.get_error_rate();
+            self.num_of_indels = bam_stats.get_num_indels();
+            self.num_of_mismatches = bam_stats.num_mismatches as usize;
+            self.num_of_insertions = bam_stats.get_num_insertions();
+            self.num_of_deletions = bam_stats.get_num_deletions();
+            self.mapped_reads_with_insertions_fraction =
+                bam_stats.get_reads_with_insertion_percentage();
+            self.mapped_reads_with_deletion_fraction =
+                bam_stats.get_reads_with_deletions_percentage();
+            self.homopolymer_indels_fraction = bam_stats.get_homopolymer_indels_fraction() * 100.0;
+
+            // Coverage
+            self.mean_coverage_data = bam_stats.mean_coverage;
+            self.std_coverage_data = bam_stats.std_coverage;
+            self.num_overlap_reads_pairs = bam_stats.num_overlapping_read_pairs as usize;
+            self.paired_end_adapted_mean_coverage = bam_stats.adapted_mean_coverage;
+            self.coverage_quotes = bam_stats.coverage_quotes.clone();
+            // Coverage per contig
+            self.chromosome_stats = bam_stats.chromosome_stats.clone();
+        }
+    }
+
+    pub fn export_to_txt(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        let filepath = Path::new(output_dir).join(format!("{}.txt", "genome_results"));
+        let mut report = File::create(filepath)?;
+        writeln!(report, "BamQC report")?;
+        writeln!(report, "-----------------------------------")?;
+        writeln!(report)?;
+
+        writeln!(report, ">>>>>>> Input")?;
+        writeln!(report)?;
+        writeln!(report, "     bam file = {}", self.bam_file.clone())?;
+        writeln!(
+            report,
+            "     outfile = {}",
+            format!("{}/{}.txt", output_dir, "genome_results")
+        )?;
+        writeln!(report)?;
+        writeln!(report)?;
+
+        writeln!(report, ">>>>>>> Reference")?;
+        writeln!(report)?;
+        writeln!(report, "     number of bases = {}", self.num_of_bases)?;
+        writeln!(report, "     number of contigs = {}", self.num_of_contigs)?;
+        writeln!(report)?;
+        writeln!(report)?;
+
+        writeln!(report, ">>>>>>> Globals")?;
+        writeln!(report)?;
+        writeln!(report, "     number of windows = {}", self.num_of_windows)?;
+        writeln!(report)?;
+        writeln!(report, "     number of reads = {}", self.num_of_reads)?;
+        writeln!(
+            report,
+            "     number of mapped reads = {} ({})",
+            self.num_of_mapped_reads,
+            format!("{:.2}%", self.percent_of_mapped_reads)
+        )?;
+
+        if self.num_of_supplementary_alignments > 0 {
+            writeln!(
+                report,
+                "     number of supplementary alignments = {} ({})",
+                self.num_of_supplementary_alignments,
+                format!("{:.2}%", self.percent_of_supplementary_alignments)
+            )?;
+        }
+
+        writeln!(
+            report,
+            "     number of secondary alignments = {}",
+            self.num_of_second_alignments
+        )?;
+
+        writeln!(report)?;
+
+        if self.num_of_paired_reads > 0 {
+            writeln!(
+                report,
+                "     number of mapped paired reads (first in pair) = {}",
+                self.num_of_mapped_reads_first_in_pair
+            )?;
+            writeln!(
+                report,
+                "     number of mapped paired reads (second in pair) = {}",
+                self.num_of_mapped_reads_second_in_pair
+            )?;
+            writeln!(
+                report,
+                "     number of mapped paired reads (both in pair) = {}",
+                self.num_of_paired_reads - self.num_of_mapped_reads_singletons
+            )?;
+            writeln!(
+                report,
+                "     number of mapped paired reads (singletons) = {}",
+                self.num_of_mapped_reads_singletons
+            )?;
+
+            if self.num_overlap_reads_pairs > 0 {
+                writeln!(
+                    report,
+                    "     number of overlapping read pairs = {}",
+                    self.num_overlap_reads_pairs
+                )?;
+            }
+
+            writeln!(report)?;
+        }
+
+        writeln!(
+            report,
+            "     number of mapped bases = {} bp",
+            self.num_of_mapped_bases
+        )?;
+        writeln!(
+            report,
+            "     number of sequenced bases = {} bp",
+            self.num_of_sequenced_bases
+        )?;
+        writeln!(
+            report,
+            "     number of aligned bases = {} bp",
+            self.num_of_aligned_bases
+        )?;
+
+        if self.num_of_flagged_duplicate_reads > 0 {
+            writeln!(
+                report,
+                "     number of duplicated reads (flagged) = {}",
+                self.num_of_flagged_duplicate_reads
+            )?;
+        } else {
+            writeln!(
+                report,
+                "     number of duplicated reads (estimated) = {}",
+                self.num_of_estimated_duplicate_reads
+            )?;
+            writeln!(
+                report,
+                "     duplication rate = {}",
+                format!("{:.2}%", self.duplication_rate)
+            )?;
+        }
+
+        if self.num_of_mapped_reads == 0
+            || (self.num_of_selected_regions > 0 && self.num_of_mapped_reads_in_regions == 0)
+        {
+            return Ok(());
+        }
+
+        writeln!(report)?;
+        writeln!(report)?;
+
+        // todo!() region analyze
+
+        // insert size
+        writeln!(report, ">>>>>>> Insert size")?;
+        writeln!(report)?;
+        writeln!(
+            report,
+            "     mean insert size = {}",
+            format!("{:.4}", self.mean_insert_size)
+        )?;
+        writeln!(
+            report,
+            "     std insert size = {}",
+            format!("{:.4}", self.std_insert_size)
+        )?;
+        writeln!(
+            report,
+            "     median insert size = {}",
+            self.median_insert_size
+        )?;
+        writeln!(report)?;
+        writeln!(report)?;
+
+        // mapping quality
+        writeln!(report, ">>>>>>> Mapping quality")?;
+        writeln!(report)?;
+        writeln!(
+            report,
+            "     mean mapping quality = {}",
+            format!("{:.4}", self.mean_mapping_quality)
+        )?;
+        writeln!(report)?;
+        writeln!(report)?;
+
+        // actg content
+        writeln!(report, ">>>>>>> ACTG content")?;
+        writeln!(report)?;
+        writeln!(
+            report,
+            "     number of A's = {} bp ({})",
+            self.num_of_as,
+            format!("{:.2}%", self.percent_of_as)
+        )?;
+        writeln!(
+            report,
+            "     number of C's = {} bp ({})",
+            self.num_of_cs,
+            format!("{:.2}%", self.percent_of_cs)
+        )?;
+        writeln!(
+            report,
+            "     number of T's = {} bp ({})",
+            self.num_of_ts,
+            format!("{:.2}%", self.percent_of_ts)
+        )?;
+        writeln!(
+            report,
+            "     number of G's = {} bp ({})",
+            self.num_of_gs,
+            format!("{:.2}%", self.percent_of_gs)
+        )?;
+        writeln!(
+            report,
+            "     number of N's = {} bp ({})",
+            self.num_of_ns,
+            format!("{:.2}%", self.percent_of_ns)
+        )?;
+        writeln!(report)?;
+        writeln!(
+            report,
+            "     GC percentage = {}",
+            format!("{:.2}%", self.gc_content)
+        )?;
+
+        writeln!(report)?;
+        writeln!(report)?;
+
+        // Mismatches and indels
+        writeln!(report, ">>>>>>> Mismatches and indels")?;
+        writeln!(report)?;
+        writeln!(
+            report,
+            "    general error rate = {}",
+            format!("{:.4}", self.general_error_rate)
+        )?;
+        writeln!(
+            report,
+            "    number of mismatches = {}",
+            self.num_of_mismatches
+        )?;
+
+        if self.num_of_indels > 0 {
+            writeln!(
+                report,
+                "    number of insertions = {}",
+                self.num_of_insertions
+            )?;
+            writeln!(
+                report,
+                "    mapped reads with insertion percentage = {}",
+                format!("{:.2}%", self.mapped_reads_with_insertions_fraction)
+            )?;
+            writeln!(
+                report,
+                "    number of deletions = {}",
+                self.num_of_deletions
+            )?;
+            writeln!(
+                report,
+                "    mapped reads with deletion percentage = {}",
+                format!("{:.2}%", self.mapped_reads_with_deletion_fraction)
+            )?;
+            writeln!(
+                report,
+                "    homopolymer indels = {}",
+                format!("{:.2}%", self.homopolymer_indels_fraction)
+            )?;
+        }
+
+        writeln!(report)?;
+        writeln!(report)?;
+
+        // coverageData
+        writeln!(report, ">>>>>>> Coverage")?;
+        writeln!(report)?;
+        writeln!(
+            report,
+            "     mean coverageData = {:.4}X",
+            self.mean_coverage_data
+        )?;
+        writeln!(
+            report,
+            "     std coverageData = {:.4}X",
+            self.std_coverage_data
+        )?;
+
+        if self.num_overlap_reads_pairs > 0 {
+            writeln!(
+                report,
+                "     paired-end adapted mean coverageData = {}X",
+                format!("{:.2}%", self.paired_end_adapted_mean_coverage)
+            )?;
+        }
+
+        writeln!(report)?;
+        for i in 0..self.coverage_quotes.get_size() {
+            writeln!(
+                report,
+                "     There is a {:.2}% of reference with a coverage >= {}X",
+                self.coverage_quotes.get(i).unwrap().get_y(),
+                self.coverage_quotes.get(i).unwrap().get_x()
+            )?;
+        }
+        writeln!(report)?;
+
+        // Coverage per contig
+        writeln!(report, ">>>>>>> Coverage per contig")?;
+        writeln!(report)?;
+
+        for chromosome_info in &self.chromosome_stats {
+            writeln!(
+                report,
+                "\t{}\t{}\t{}\t{}\t{}",
+                chromosome_info.get_name(),
+                chromosome_info.get_length(),
+                chromosome_info.get_num_bases(),
+                chromosome_info.get_cov_mean(),
+                chromosome_info.get_cov_std()
+            )?;
+        }
+        writeln!(report)?;
+
+        // report.close()?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CoverageStats {
     // coverage across reference
     coverage_across_reference_x_label: String,
@@ -5153,21 +6213,26 @@ pub struct CoverageStats {
     coverage_across_reference_y_label: String,
     coverage_across_reference_y_data: Vec<f64>,
     coverage_across_reference_deviation_std_y_data: Vec<f64>,
+    // all coverage histogram
+    all_coverage_histogram_x_label: String,
+    all_coverage_histogram_x_data: Vec<f64>,
+    all_coverage_histogram_y_label: String,
+    all_coverage_histogram_y_data: Vec<f64>,
     // balanced coverage histogram
     balanced_coverage_bar_names_x_label: String,
     balanced_coverage_bar_names_x_data: Vec<String>,
     balance_coverage_histogram_y_label: String,
-    balance_coverage_histogram_y_data: XYVector,
+    balance_coverage_histogram_y_data: Vec<f64>,
     // Coverage Histogram 0-50x
     ranged_coverage_histogram_x_label: String,
-    ranged_coverage_histogram_x_data: Vec<String>,
+    ranged_coverage_histogram_x_data: Vec<f64>,
     ranged_coverage_histogram_y_label: String,
-    ranged_coverage_histogram_y_data: XYVector,
+    ranged_coverage_histogram_y_data: Vec<f64>,
     // Genome Fraction Coverage
     genome_fraction_coverage_x_label: String,
-    genome_fraction_coverage_x_data: Vec<String>,
+    genome_fraction_coverage_x_data: Vec<f64>,
     genome_fraction_coverage_y_label: String,
-    genome_fraction_coverage_y_data: XYVector,
+    genome_fraction_coverage_y_data: Vec<f64>,
 }
 
 impl CoverageStats {
@@ -5179,76 +6244,125 @@ impl CoverageStats {
             coverage_across_reference_y_label: "".to_string(),
             coverage_across_reference_y_data: vec![],
             coverage_across_reference_deviation_std_y_data: vec![],
+            // all coverage histogram
+            all_coverage_histogram_x_label: "".to_string(),
+            all_coverage_histogram_x_data: vec![],
+            all_coverage_histogram_y_label: "".to_string(),
+            all_coverage_histogram_y_data: vec![],
             // balanced coverage histogram
             balanced_coverage_bar_names_x_label: "".to_string(),
             balanced_coverage_bar_names_x_data: vec![],
             balance_coverage_histogram_y_label: "".to_string(),
-            balance_coverage_histogram_y_data: XYVector::new(),
+            balance_coverage_histogram_y_data: vec![],
             // Coverage Histogram 0-50x
             ranged_coverage_histogram_x_label: "".to_string(),
             ranged_coverage_histogram_x_data: vec![],
             ranged_coverage_histogram_y_label: "".to_string(),
-            ranged_coverage_histogram_y_data: XYVector::new(),
+            ranged_coverage_histogram_y_data: vec![],
             // Genome Fraction Coverage
             genome_fraction_coverage_x_label: "".to_string(),
             genome_fraction_coverage_x_data: vec![],
             genome_fraction_coverage_y_label: "".to_string(),
-            genome_fraction_coverage_y_data: XYVector::new(),
+            genome_fraction_coverage_y_data: vec![],
         }
     }
 
+    pub fn export_to_txt(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        self.export_coverage_across_reference(output_dir);
+        self.export_coverage_histogram(output_dir);
+        Ok(())
+    }
+
+    fn export_coverage_histogram(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        let filepath = Path::new(output_dir).join(format!("{}.txt", "coverage_histogram"));
+        let mut f = File::create(filepath).unwrap();
+        let mut writer = WriterBuilder::new().delimiter(b'\t').from_writer(f);
+        writer.write_record(&["#Coverage", "Number of genomic locations"])?;
+
+        for (x, y) in self
+            .all_coverage_histogram_x_data
+            .iter()
+            .zip(self.all_coverage_histogram_y_data.iter())
+        {
+            writer.write_record(&[x.to_string(), y.to_string()])?
+        }
+        Ok(())
+    }
+
+    fn export_coverage_across_reference(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        let filepath = Path::new(output_dir).join(format!("{}.txt", "coverage_across_reference"));
+        let mut f = File::create(filepath).unwrap();
+        let mut writer = WriterBuilder::new().delimiter(b'\t').from_writer(f);
+        writer.write_record(&["#Position (bp)", "Coverage", "Std"])?;
+
+        for (x, (y, std)) in self.coverage_across_reference_x_data.iter().zip(
+            self.coverage_across_reference_y_data
+                .iter()
+                .zip(self.coverage_across_reference_deviation_std_y_data.iter()),
+        ) {
+            writer.write_record(&[x.to_string(), y.to_string(), std.to_string()])?
+        }
+        Ok(())
+    }
+
     fn extract(&mut self, bam_stats: &BamStats) {
-        // coverage across reference
-        self.coverage_across_reference_x_label = "Position (bp)".to_string();
-        self.coverage_across_reference_x_data =
-            vec![0.0; bam_stats.get_number_of_windows() as usize];
-        for i in 0..bam_stats.get_number_of_windows() as usize {
-            self.coverage_across_reference_x_data[i] =
-                (bam_stats.get_window_start(i) + bam_stats.get_window_end(i)) as f64 / 2.0;
-        }
-
-        self.coverage_across_reference_y_label = "Coverage (X)".to_string();
-        self.coverage_across_reference_y_data = bam_stats.coverage_across_reference.clone();
-        self.coverage_across_reference_deviation_std_y_data =
-            bam_stats.std_coverage_across_reference.clone();
-
-        // balanced coverage histogram
-        self.balance_coverage_histogram_y_label = "Number of genomic locations".to_string();
-        self.balance_coverage_histogram_y_data = bam_stats.balanced_coverage_histogram.clone();
-
-        self.balanced_coverage_bar_names_x_label = "Coverage (X)".to_string();
-        for i in 0..bam_stats.balanced_coverage_bar_names.len() {
-            self.balanced_coverage_bar_names_x_data
-                .push(bam_stats.balanced_coverage_bar_names[&(i as i64)].clone());
-        }
-
-        // Coverage Histogram 0-50x
-        let min_coverage = bam_stats.coverage_histogram.get(0).unwrap().get_x();
-        if min_coverage < 40.0 {
-            // This histogram only makes sense for low coverage samples
-            self.ranged_coverage_histogram_x_label = "Coverage (X)".to_string();
-            self.ranged_coverage_histogram_y_label = "Number of genomic locations".to_string();
-
-            for index in 0..bam_stats.coverage_histogram.items.len() {
-                if index > 50 {
-                    break;
+        unsafe {
+            // coverage across reference
+            self.coverage_across_reference_x_label = "Position (bp)".to_string();
+            self.coverage_across_reference_x_data = vec![0.0; NUMBER_OF_TOTAL_WINDOWS as usize];
+            for i in 0..NUMBER_OF_TOTAL_WINDOWS as usize {
+                unsafe {
+                    self.coverage_across_reference_x_data[i] =
+                        (WINDOW_STARTS[i] + WINDOW_ENDS[i]) as f64 / 2.0;
                 }
-                let item = &bam_stats.coverage_histogram.items[index];
-                self.ranged_coverage_histogram_y_data
-                    .add_item(XYItem::new(item.xy_item.get_x(), item.xy_item.get_y()));
-                self.ranged_coverage_histogram_x_data
-                    .push(item.xy_item.get_x().to_string());
             }
-        }
 
-        // Genome Fraction Coverage
-        self.genome_fraction_coverage_y_data = bam_stats.coverage_quotes.clone();
-        self.genome_fraction_coverage_x_label = "Coverage (X)".to_string();
-        self.genome_fraction_coverage_y_label = "Fraction of reference (%)".to_string();
+            self.coverage_across_reference_y_label = "Coverage (X)".to_string();
+            self.coverage_across_reference_y_data = bam_stats.coverage_across_reference.clone();
+            self.coverage_across_reference_deviation_std_y_data =
+                bam_stats.std_coverage_across_reference.clone();
 
-        for i in 0..self.genome_fraction_coverage_y_data.items.len() {
-            self.genome_fraction_coverage_x_data
-                .push((i + 1).to_string());
+            // all coverage histogram
+            self.all_coverage_histogram_y_label = "Number of genomic locations".to_string();
+            self.all_coverage_histogram_x_label = "Coverage (X)".to_string();
+            self.all_coverage_histogram_x_data = bam_stats.coverage_histogram.get_x_vector();
+            self.all_coverage_histogram_y_data = bam_stats.coverage_histogram.get_y_vector();
+
+            // balanced coverage histogram
+            self.balance_coverage_histogram_y_label = "Number of genomic locations".to_string();
+            self.balance_coverage_histogram_y_data =
+                bam_stats.balanced_coverage_histogram.get_y_vector();
+
+            self.balanced_coverage_bar_names_x_label = "Coverage (X)".to_string();
+            for i in 0..bam_stats.balanced_coverage_bar_names.len() {
+                self.balanced_coverage_bar_names_x_data
+                    .push(bam_stats.balanced_coverage_bar_names[&(i as i64)].clone());
+            }
+
+            // Coverage Histogram 0-50x
+            let min_coverage = bam_stats.coverage_histogram.get(0).unwrap().get_x();
+            if min_coverage < 40.0 {
+                // This histogram only makes sense for low coverage samples
+                self.ranged_coverage_histogram_x_label = "Coverage (X)".to_string();
+                self.ranged_coverage_histogram_y_label = "Number of genomic locations".to_string();
+
+                for index in 0..bam_stats.coverage_histogram.items.len() {
+                    if index > 50 {
+                        break;
+                    }
+                    let item = &bam_stats.coverage_histogram.items[index];
+                    self.ranged_coverage_histogram_y_data
+                        .push(item.xy_item.get_y());
+                    self.ranged_coverage_histogram_x_data
+                        .push(item.xy_item.get_x());
+                }
+            }
+
+            // Genome Fraction Coverage
+            self.genome_fraction_coverage_y_data = bam_stats.coverage_quotes.get_y_vector();
+            self.genome_fraction_coverage_x_data = bam_stats.coverage_quotes.get_x_vector();
+            self.genome_fraction_coverage_x_label = "Coverage (X)".to_string();
+            self.genome_fraction_coverage_y_label = "Fraction of reference (%)".to_string();
         }
     }
 }
@@ -5256,60 +6370,72 @@ impl CoverageStats {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DuplicationStats {
     duplication_rate_histogram_x_label: String,
-    duplication_rate_histogram_x_data: Vec<String>,
     duplication_rate_histogram_y_label: String,
-    duplication_rate_histogram_y_data: XYVector,
+    duplication_rate_histogram_x_data: Vec<f64>,
+    duplication_rate_histogram_y_data: Vec<f64>,
 }
 
 impl DuplicationStats {
     pub fn new() -> Self {
         Self {
             duplication_rate_histogram_x_label: "".to_string(),
-            duplication_rate_histogram_x_data: vec![],
             duplication_rate_histogram_y_label: "".to_string(),
-            duplication_rate_histogram_y_data: XYVector::new(),
+            duplication_rate_histogram_x_data: vec![],
+            duplication_rate_histogram_y_data: vec![],
         }
     }
 
     fn extract(&mut self, bam_stats: &BamStats) {
         self.duplication_rate_histogram_x_label = "Duplication rate".to_string();
         self.duplication_rate_histogram_y_label = "Number of loci".to_string();
-
-        self.duplication_rate_histogram_y_data = bam_stats.unique_read_starts_histogram.clone();
-
-        for i in 0..self.duplication_rate_histogram_y_data.items.len() {
-            self.duplication_rate_histogram_x_data
-                .push((i + 1).to_string());
-        }
+        self.duplication_rate_histogram_x_data =
+            bam_stats.unique_read_starts_histogram.get_x_vector();
+        self.duplication_rate_histogram_y_data =
+            bam_stats.unique_read_starts_histogram.get_y_vector();
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MappedReadsNucleotideContent {
-    reads_nuleotide_a_content_xy_data: XYVector,
-    reads_nuleotide_t_content_xy_data: XYVector,
-    reads_nuleotide_c_content_xy_data: XYVector,
-    reads_nuleotide_g_content_xy_data: XYVector,
-    reads_nuleotide_n_content_xy_data: XYVector,
+    reads_nuleotide_a_content_x_data: Vec<f64>,
+    reads_nuleotide_a_content_y_data: Vec<f64>,
+    reads_nuleotide_t_content_x_data: Vec<f64>,
+    reads_nuleotide_t_content_y_data: Vec<f64>,
+    reads_nuleotide_c_content_x_data: Vec<f64>,
+    reads_nuleotide_c_content_y_data: Vec<f64>,
+    reads_nuleotide_g_content_x_data: Vec<f64>,
+    reads_nuleotide_g_content_y_data: Vec<f64>,
+    reads_nuleotide_n_content_x_data: Vec<f64>,
+    reads_nuleotide_n_content_y_data: Vec<f64>,
 }
 
 impl MappedReadsNucleotideContent {
     pub fn new() -> Self {
         Self {
-            reads_nuleotide_a_content_xy_data: XYVector::new(),
-            reads_nuleotide_t_content_xy_data: XYVector::new(),
-            reads_nuleotide_c_content_xy_data: XYVector::new(),
-            reads_nuleotide_g_content_xy_data: XYVector::new(),
-            reads_nuleotide_n_content_xy_data: XYVector::new(),
+            reads_nuleotide_a_content_x_data: vec![],
+            reads_nuleotide_a_content_y_data: vec![],
+            reads_nuleotide_t_content_x_data: vec![],
+            reads_nuleotide_t_content_y_data: vec![],
+            reads_nuleotide_c_content_x_data: vec![],
+            reads_nuleotide_c_content_y_data: vec![],
+            reads_nuleotide_g_content_x_data: vec![],
+            reads_nuleotide_g_content_y_data: vec![],
+            reads_nuleotide_n_content_x_data: vec![],
+            reads_nuleotide_n_content_y_data: vec![],
         }
     }
 
     fn extract(&mut self, bam_stats: &BamStats) {
-        self.reads_nuleotide_a_content_xy_data = bam_stats.reads_as_histogram.clone();
-        self.reads_nuleotide_t_content_xy_data = bam_stats.reads_ts_histogram.clone();
-        self.reads_nuleotide_c_content_xy_data = bam_stats.reads_cs_histogram.clone();
-        self.reads_nuleotide_g_content_xy_data = bam_stats.reads_gs_histogram.clone();
-        self.reads_nuleotide_n_content_xy_data = bam_stats.reads_ns_histogram.clone();
+        self.reads_nuleotide_a_content_x_data = bam_stats.reads_as_histogram.get_x_vector();
+        self.reads_nuleotide_a_content_y_data = bam_stats.reads_as_histogram.get_y_vector();
+        self.reads_nuleotide_t_content_x_data = bam_stats.reads_ts_histogram.get_x_vector();
+        self.reads_nuleotide_t_content_y_data = bam_stats.reads_ts_histogram.get_y_vector();
+        self.reads_nuleotide_c_content_x_data = bam_stats.reads_cs_histogram.get_x_vector();
+        self.reads_nuleotide_c_content_y_data = bam_stats.reads_cs_histogram.get_y_vector();
+        self.reads_nuleotide_g_content_x_data = bam_stats.reads_gs_histogram.get_x_vector();
+        self.reads_nuleotide_g_content_y_data = bam_stats.reads_gs_histogram.get_y_vector();
+        self.reads_nuleotide_n_content_x_data = bam_stats.reads_ns_histogram.get_x_vector();
+        self.reads_nuleotide_n_content_y_data = bam_stats.reads_ns_histogram.get_y_vector();
     }
 }
 
@@ -5317,7 +6443,8 @@ impl MappedReadsNucleotideContent {
 pub struct MappedReadsGCContent {
     reads_gc_content_histogram_x_label: String,
     reads_gc_content_histogram_y_label: String,
-    reads_gc_content_histogram_xy_data: XYVector,
+    reads_gc_content_histogram_x_data: Vec<f64>,
+    reads_gc_content_histogram_y_data: Vec<f64>,
 }
 
 impl MappedReadsGCContent {
@@ -5325,8 +6452,31 @@ impl MappedReadsGCContent {
         Self {
             reads_gc_content_histogram_x_label: "".to_string(),
             reads_gc_content_histogram_y_label: "".to_string(),
-            reads_gc_content_histogram_xy_data: XYVector::new(),
+            reads_gc_content_histogram_x_data: vec![],
+            reads_gc_content_histogram_y_data: vec![],
         }
+    }
+
+    pub fn export_to_txt(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        self.export_gc_content_histogram(output_dir);
+        Ok(())
+    }
+
+    fn export_gc_content_histogram(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        let filepath =
+            Path::new(output_dir).join(format!("{}.txt", "mapped_reads_gc-content_distribution"));
+        let mut f = File::create(filepath).unwrap();
+        let mut writer = WriterBuilder::new().delimiter(b'\t').from_writer(f);
+        writer.write_record(&["#GC Content (%)", "Sample"])?;
+
+        for (x, y) in self
+            .reads_gc_content_histogram_x_data
+            .iter()
+            .zip(self.reads_gc_content_histogram_y_data.iter())
+        {
+            writer.write_record(&[x.to_string(), y.to_string()])?
+        }
+        Ok(())
     }
 
     fn extract(&mut self, bam_stats: &BamStats) {
@@ -5334,7 +6484,10 @@ impl MappedReadsGCContent {
         self.reads_gc_content_histogram_x_label = "GC Content (%)".to_string();
         self.reads_gc_content_histogram_y_label = "Fraction of reads".to_string();
 
-        self.reads_gc_content_histogram_xy_data = bam_stats.get_gc_content_histogram();
+        self.reads_gc_content_histogram_x_data =
+            bam_stats.get_gc_content_histogram().get_x_vector();
+        self.reads_gc_content_histogram_y_data =
+            bam_stats.get_gc_content_histogram().get_y_vector();
     }
 }
 
@@ -5342,21 +6495,24 @@ impl MappedReadsGCContent {
 pub struct ClippingProfileStats {
     clipping_profile_x_label: String,
     clipping_profile_y_label: String,
-    clipping_profile_xy_data: XYVector,
+    clipping_profile_x_data: Vec<f64>,
+    clipping_profile_y_data: Vec<f64>,
 }
 impl ClippingProfileStats {
     pub fn new() -> Self {
         Self {
             clipping_profile_x_label: "".to_string(),
             clipping_profile_y_label: "".to_string(),
-            clipping_profile_xy_data: XYVector::new(),
+            clipping_profile_x_data: vec![],
+            clipping_profile_y_data: vec![],
         }
     }
 
     fn extract(&mut self, bam_stats: &BamStats) {
         self.clipping_profile_x_label = "Read position (bp)".to_string();
         self.clipping_profile_y_label = " Clipped bases (%)".to_string();
-        self.clipping_profile_xy_data = bam_stats.reads_clipping_profile_histogram.clone();
+        self.clipping_profile_x_data = bam_stats.reads_clipping_profile_histogram.get_x_vector();
+        self.clipping_profile_y_data = bam_stats.reads_clipping_profile_histogram.get_y_vector();
     }
 }
 
@@ -5401,7 +6557,8 @@ pub struct MappingQualityStats {
     // mapping quality histogram
     mapping_quality_histogram_x_label: String,
     mapping_quality_histogram_y_label: String,
-    mapping_quality_histogram_xy_data: XYVector,
+    mapping_quality_histogram_x_data: Vec<f64>,
+    mapping_quality_histogram_y_data: Vec<f64>,
 }
 impl MappingQualityStats {
     pub fn new() -> Self {
@@ -5414,27 +6571,33 @@ impl MappingQualityStats {
             // mapping quality histogram
             mapping_quality_histogram_x_label: "".to_string(),
             mapping_quality_histogram_y_label: "".to_string(),
-            mapping_quality_histogram_xy_data: XYVector::new(),
+            mapping_quality_histogram_x_data: vec![],
+            mapping_quality_histogram_y_data: vec![],
         }
     }
 
     fn extract(&mut self, bam_stats: &BamStats) {
-        // mapping quality across reference
-        self.mapping_quality_across_reference_x_label = "Position (bp)".to_string();
-        self.mapping_quality_across_reference_y_label = "Mapping quality".to_string();
-        self.mapping_quality_across_reference_y_data =
-            bam_stats.mapping_quality_across_reference.clone();
-        self.mapping_quality_across_reference_x_data =
-            vec![0.0; bam_stats.get_number_of_windows() as usize];
-        for i in 0..bam_stats.get_number_of_windows() as usize {
-            self.mapping_quality_across_reference_x_data[i] =
-                (bam_stats.get_window_start(i) + bam_stats.get_window_end(i)) as f64 / 2.0;
-        }
+        unsafe {
+            // mapping quality across reference
+            self.mapping_quality_across_reference_x_label = "Position (bp)".to_string();
+            self.mapping_quality_across_reference_y_label = "Mapping quality".to_string();
+            self.mapping_quality_across_reference_y_data =
+                bam_stats.mapping_quality_across_reference.clone();
+            self.mapping_quality_across_reference_x_data =
+                vec![0.0; NUMBER_OF_TOTAL_WINDOWS as usize];
+            for i in 0..NUMBER_OF_TOTAL_WINDOWS as usize {
+                self.mapping_quality_across_reference_x_data[i] =
+                    (WINDOW_STARTS[i] + WINDOW_ENDS[i]) as f64 / 2.0;
+            }
 
-        // mapping quality histogram
-        self.mapping_quality_histogram_x_label = "Mapping quality".to_string();
-        self.mapping_quality_histogram_y_label = "Number of genomic locations".to_string();
-        self.mapping_quality_histogram_xy_data = bam_stats.mapping_quality_histogram.clone();
+            // mapping quality histogram
+            self.mapping_quality_histogram_x_label = "Mapping quality".to_string();
+            self.mapping_quality_histogram_y_label = "Number of genomic locations".to_string();
+            self.mapping_quality_histogram_x_data =
+                bam_stats.mapping_quality_histogram.get_x_vector();
+            self.mapping_quality_histogram_y_data =
+                bam_stats.mapping_quality_histogram.get_y_vector();
+        }
     }
 }
 
@@ -5448,7 +6611,8 @@ pub struct InsertSizeStats {
     // insert size histogram
     insert_size_histogram_x_label: String,
     insert_size_histogram_y_label: String,
-    insert_size_histogram_xy_data: XYVector,
+    insert_size_histogram_x_data: Vec<f64>,
+    insert_size_histogram_y_data: Vec<f64>,
 }
 impl InsertSizeStats {
     pub fn new() -> Self {
@@ -5461,26 +6625,72 @@ impl InsertSizeStats {
             // insert size histogram
             insert_size_histogram_x_label: "".to_string(),
             insert_size_histogram_y_label: "".to_string(),
-            insert_size_histogram_xy_data: XYVector::new(),
+            insert_size_histogram_x_data: vec![],
+            insert_size_histogram_y_data: vec![],
         }
     }
 
-    fn extract(&mut self, bam_stats: &BamStats) {
-        // insert size across reference
-        self.insert_size_across_reference_x_label = "Position (bp)".to_string();
-        self.insert_size_across_reference_y_label = "Insert size (bp)".to_string();
-        self.insert_size_across_reference_y_data = bam_stats.insert_size_across_reference.clone();
-        self.insert_size_across_reference_x_data =
-            vec![0.0; bam_stats.get_number_of_windows() as usize];
-        for i in 0..bam_stats.get_number_of_windows() as usize {
-            self.insert_size_across_reference_x_data[i] =
-                (bam_stats.get_window_start(i) + bam_stats.get_window_end(i)) as f64 / 2.0;
-        }
+    pub fn export_to_txt(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        self.export_insert_size_across_reference(output_dir);
+        self.export_insert_size_histogram(output_dir);
+        Ok(())
+    }
 
-        // insert size histogram
-        self.insert_size_histogram_x_label = "Insert size (bp)".to_string();
-        self.insert_size_histogram_y_label = "Number of reads".to_string();
-        self.insert_size_histogram_xy_data = bam_stats.insert_size_histogram.clone();
+    fn export_insert_size_histogram(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        let filepath = Path::new(output_dir).join(format!("{}.txt", "insert_size_histogram"));
+        let mut f = File::create(filepath).unwrap();
+        let mut writer = WriterBuilder::new().delimiter(b'\t').from_writer(f);
+        writer.write_record(&["#Insert size (bp)", "insert size"])?;
+
+        for (x, y) in self
+            .insert_size_histogram_x_data
+            .iter()
+            .zip(self.insert_size_histogram_y_data.iter())
+        {
+            writer.write_record(&[x.to_string(), y.to_string()])?
+        }
+        Ok(())
+    }
+
+    fn export_insert_size_across_reference(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        let filepath =
+            Path::new(output_dir).join(format!("{}.txt", "insert_size_across_reference"));
+        let mut f = File::create(filepath).unwrap();
+
+        let mut writer = WriterBuilder::new().delimiter(b'\t').from_writer(f);
+        writer.write_record(&["#Position (bp)", "insert size"])?;
+
+        for (x, y) in self
+            .insert_size_across_reference_x_data
+            .iter()
+            .zip(self.insert_size_across_reference_y_data.iter())
+        {
+            writer.write_record(&[x.to_string(), y.to_string()])?
+        }
+        Ok(())
+    }
+
+    fn extract(&mut self, bam_stats: &BamStats) {
+        unsafe {
+            // insert size across reference
+            self.insert_size_across_reference_x_label = "Position (bp)".to_string();
+            self.insert_size_across_reference_y_label = "Insert size (bp)".to_string();
+            self.insert_size_across_reference_y_data =
+                bam_stats.insert_size_across_reference.clone();
+            self.insert_size_across_reference_x_data = vec![0.0; NUMBER_OF_TOTAL_WINDOWS as usize];
+            for i in 0..NUMBER_OF_TOTAL_WINDOWS as usize {
+                unsafe {
+                    self.insert_size_across_reference_x_data[i] =
+                        (WINDOW_STARTS[i] + WINDOW_ENDS[i]) as f64 / 2.0;
+                }
+            }
+
+            // insert size histogram
+            self.insert_size_histogram_x_label = "Insert size (bp)".to_string();
+            self.insert_size_histogram_y_label = "Number of reads".to_string();
+            self.insert_size_histogram_x_data = bam_stats.insert_size_histogram.get_x_vector();
+            self.insert_size_histogram_y_data = bam_stats.insert_size_histogram.get_y_vector();
+        }
     }
 }
 
@@ -5488,6 +6698,8 @@ impl InsertSizeStats {
 pub struct Qualimap {
     pub input_info: InputInfo,
     pub basic_stats: BasicStats,
+    #[serde(skip_serializing)]
+    pub detailed_stats: DetailedStats,
     pub coverage_stats: CoverageStats,
     pub duplication_stats: DuplicationStats,
     pub mapping_read_nucleotide_content: MappedReadsNucleotideContent,
@@ -5503,6 +6715,7 @@ impl Qualimap {
         Self {
             input_info: InputInfo::new(),
             basic_stats: BasicStats::new(),
+            detailed_stats: DetailedStats::new(),
             coverage_stats: CoverageStats::new(),
             duplication_stats: DuplicationStats::new(),
             mapping_read_nucleotide_content: MappedReadsNucleotideContent::new(),
@@ -5525,6 +6738,7 @@ impl Qualimap {
         let bam_stats = bam_stats_analysis.get_bam_stats().unwrap();
         self.input_info.extract(&bam_stats_analysis);
         self.basic_stats.extract(bam_stats);
+        self.detailed_stats.extract(bam_stats);
         self.coverage_stats.extract(bam_stats);
         self.duplication_stats.extract(bam_stats);
         self.mapping_read_nucleotide_content.extract(bam_stats);
@@ -5540,5 +6754,14 @@ impl Qualimap {
         if bam_stats_analysis.is_paired_data_flag {
             self.insert_size_stats.extract(bam_stats);
         }
+    }
+
+    pub fn export(&self,output_dir:&str) -> Result<(), Box<dyn Error>>{
+        let _ =self.detailed_stats.export_to_txt(output_dir);
+        let _ =self.coverage_stats.export_to_txt(output_dir);
+        let _ =self.insert_size_stats.export_to_txt(output_dir);
+        let _ =self.mapping_read_gc_content.export_to_txt(output_dir);
+
+        Ok(())
     }
 }

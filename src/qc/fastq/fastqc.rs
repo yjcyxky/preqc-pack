@@ -1,10 +1,15 @@
+use crate::qc::config::fastq_config::FastQCConstants;
 use fastq::Record;
 use log::*;
 use probability::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::error::Error;
+use std::fs::File;
+use std::io::prelude::*;
 use std::io::Read;
+use std::path::Path;
 use std::{
     cmp,
     collections::HashMap,
@@ -12,21 +17,6 @@ use std::{
     str::from_utf8,
     vec,
 };
-
-const SANGER_ENCODING_OFFSET: usize = 33;
-const ILLUMINA_1_3_ENCODING_OFFSET: usize = 64;
-const SANGER_ILLUMINA_1_9: &str = "Sanger / Illumina 1.9";
-const ILLUMINA_1_3: &str = "Illumina 1.3";
-const ILLUMINA_1_5: &str = "Illumina 1.5";
-
-const FORWARD_TYPE: usize = 1;
-const REVERSE_TYPE: usize = 2;
-
-const FASTQC_CONFIG_DUP_LENGTH: usize = 0;
-const FASTQC_CONFIG_KMER_SIZE: usize = 0;
-
-const INDICATOR_CONFIG_TILE_IGNORE: usize = 0;
-const INDICATOR_CONFIG_OVERREPESENTED_WARN: f64 = 0.1;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QualityCount {
@@ -314,11 +304,20 @@ impl PhredEncoding {
                 lowest_char, acscii_num
             );
         } else if acscii_num < 64 {
-            return PhredEncoding::new(SANGER_ILLUMINA_1_9, SANGER_ENCODING_OFFSET);
-        } else if acscii_num == ILLUMINA_1_3_ENCODING_OFFSET + 1 {
-            return PhredEncoding::new(ILLUMINA_1_3, ILLUMINA_1_3_ENCODING_OFFSET);
+            return PhredEncoding::new(
+                FastQCConstants::SANGER_ILLUMINA_1_9,
+                FastQCConstants::SANGER_ENCODING_OFFSET,
+            );
+        } else if acscii_num == FastQCConstants::ILLUMINA_1_3_ENCODING_OFFSET + 1 {
+            return PhredEncoding::new(
+                FastQCConstants::ILLUMINA_1_3,
+                FastQCConstants::ILLUMINA_1_3_ENCODING_OFFSET,
+            );
         } else if acscii_num <= 126 {
-            return PhredEncoding::new(ILLUMINA_1_5, ILLUMINA_1_3_ENCODING_OFFSET);
+            return PhredEncoding::new(
+                FastQCConstants::ILLUMINA_1_5,
+                FastQCConstants::ILLUMINA_1_3_ENCODING_OFFSET,
+            );
         }
 
         panic!(
@@ -382,8 +381,8 @@ mod phred_encoding_tests {
 pub struct PerBaseSeqQuality {
     #[serde(skip_serializing)]
     quality_counts: Vec<QualityCount>,
-    #[serde(skip_serializing)]
     xlabels: Vec<String>,
+    #[serde(skip_serializing)]
     base_pos: Vec<usize>,
     mean: Vec<f64>,
     median: Vec<f64>,
@@ -514,12 +513,45 @@ impl PerBaseSeqQuality {
     pub fn merge(&mut self, other: &PerBaseSeqQuality) {
         self.add_quality_counts(&other.quality_counts);
     }
+
+    pub fn raise_error(&self) -> bool {
+        for i in 0..self.lower_quartile.len() {
+            if self.lower_quartile[i] == 0.0 {
+                // There wasn't enough data for this group to make an assessment
+                continue;
+            }
+
+            if self.lower_quartile[i] < FastQCConstants::QUALITY_BASE_LOWER_ERROR
+                || self.median[i] < FastQCConstants::QUALITY_BASE_MEDIAN_ERROR
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        for i in 0..self.lower_quartile.len() {
+            if self.lower_quartile[i] == 0.0 {
+                // There wasn't enough data for this group to make an assessment
+                continue;
+            }
+
+            if self.lower_quartile[i] < FastQCConstants::QUALITY_BASE_LOWER_WARNING
+                || self.median[i] < FastQCConstants::QUALITY_BASE_MEDIAN_WARNING
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BasicStats {
     file_name: String,
     file_type: String,
+    filter_counts: usize,
     phred: PhredEncoding,
     total_reads: usize,
     total_bases: usize,
@@ -544,6 +576,7 @@ impl BasicStats {
     pub fn new() -> BasicStats {
         return BasicStats {
             file_name: "".to_string(),
+            filter_counts: 0,
             total_reads: 0,
             total_bases: 0,
             q20_bases: 0,
@@ -558,7 +591,7 @@ impl BasicStats {
             gc_percentage: 0.0,
             lowest_char: 126,
             highest_char: 0,
-            file_type: "".to_string(),
+            file_type: "Conventional base calls".to_string(),
             // We guess that the length of a sequence is impossible to be greater than 1000
             min_length: 1000,
             max_length: 0,
@@ -581,6 +614,8 @@ impl BasicStats {
                 self.highest_char = num;
             }
         }
+        // todo!() judge if Colorspace converted to bases
+        if self.file_name.is_empty() {}
 
         let mut seq_len = 0;
         for base in record.seq() {
@@ -731,6 +766,14 @@ impl BasicStats {
         self.lowest_char = self.lowest_char.min(other.lowest_char);
         self.highest_char = self.highest_char.max(other.highest_char);
     }
+
+    pub fn raise_error(&self) -> bool {
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -829,6 +872,20 @@ impl PerSeqQualityScore {
                 self.average_score_counts.insert(score, count);
             }
         }
+    }
+
+    pub fn raise_error(&self) -> bool {
+        if self.most_frequent_score <= FastQCConstants::QUALITY_SEQUENCE_ERROR {
+            return true;
+        }
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        if self.most_frequent_score <= FastQCConstants::QUALITY_SEQUENCE_WARNING {
+            return true;
+        }
+        false
     }
 }
 
@@ -955,6 +1012,32 @@ impl PerBaseSeqContent {
             self.c_counts[i] += other.c_counts[i];
             self.g_counts[i] += other.g_counts[i];
         }
+    }
+
+    pub fn raise_error(&self) -> bool {
+        for i in 0..self.percentages[0].len() {
+            let gc_diff = (self.percentages[1][i] as f64 - self.percentages[3][i] as f64).abs();
+            let at_diff = (self.percentages[0][i] as f64 - self.percentages[2][i] as f64).abs();
+            if gc_diff > FastQCConstants::SEQUENCE_ERROR
+                || at_diff > FastQCConstants::SEQUENCE_ERROR
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        for i in 0..self.percentages[0].len() {
+            let gc_diff = (self.percentages[1][i] as f64 - self.percentages[3][i] as f64).abs();
+            let at_diff = (self.percentages[0][i] as f64 - self.percentages[2][i] as f64).abs();
+            if gc_diff > FastQCConstants::SEQUENCE_WARNING
+                || at_diff > FastQCConstants::SEQUENCE_WARNING
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }
 
@@ -1279,6 +1362,14 @@ impl PerSeqGCContent {
     fn finish(&mut self) {
         self.calculate_distribution();
     }
+
+    pub fn raise_error(&self) -> bool {
+        self.deviation_percent > FastQCConstants::GC_SEQUENCE_ERROR
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        self.deviation_percent > FastQCConstants::GC_SEQUENCE_WARNING
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1367,6 +1458,24 @@ impl PerBaseNContent {
             self.n_counts[i] += other.n_counts[i];
             self.not_n_counts[i] += other.not_n_counts[i];
         }
+    }
+
+    pub fn raise_error(&self) -> bool {
+        for i in 0..self.percentages.len() {
+            if self.percentages[i] > FastQCConstants::N_CONTENT_ERROR {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        for i in 0..self.percentages.len() {
+            if self.percentages[i] > FastQCConstants::N_CONTENT_WARNING {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -1516,6 +1625,36 @@ impl SeqLenDistribution {
             self.len_counts[i] += other.len_counts[i];
         }
     }
+
+    pub fn raise_error(&self) -> bool {
+        if FastQCConstants::SEQUENCE_LENGTH_ERROR == 0 {
+            return false;
+        }
+        if self.len_counts.len() > 0 && self.len_counts[0] > 0 {
+            return true;
+        }
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        if FastQCConstants::SEQUENCE_LENGTH_WARNING == 0 {
+            return false;
+        }
+
+        // Warn if they're not all the same length
+        let mut seen_length = false;
+        for i in 0..self.len_counts.len() {
+            if self.len_counts[i] > 0 {
+                if seen_length {
+                    return true;
+                } else {
+                    seen_length = true;
+                }
+            }
+        }
+
+        false
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1577,7 +1716,7 @@ impl Contaminant {
             if forward_string.contains(&query) {
                 return Some(ContaminantHit::new(
                     self.clone(),
-                    FORWARD_TYPE,
+                    FastQCConstants::FORWARD_TYPE,
                     query.len(),
                     100,
                 ));
@@ -1585,7 +1724,7 @@ impl Contaminant {
             if reverse_string.contains(&query) {
                 return Some(ContaminantHit::new(
                     self.clone(),
-                    REVERSE_TYPE,
+                    FastQCConstants::REVERSE_TYPE,
                     query.len(),
                     100,
                 ));
@@ -1602,7 +1741,7 @@ impl Contaminant {
                 &self.forward,
                 &query.as_bytes().to_vec(),
                 offset,
-                FORWARD_TYPE,
+                FastQCConstants::FORWARD_TYPE,
             );
             if this_hit_option.clone().is_none() {
                 continue;
@@ -1620,7 +1759,7 @@ impl Contaminant {
                 &self.forward,
                 &query.as_bytes().to_vec(),
                 offset,
-                REVERSE_TYPE,
+                FastQCConstants::REVERSE_TYPE,
             );
             if this_hit_option.clone().is_none() {
                 continue;
@@ -1725,7 +1864,9 @@ impl ContaminantHit {
         _length: usize,
         _percent_id: usize,
     ) -> ContaminantHit {
-        if _direction != FORWARD_TYPE && _direction != REVERSE_TYPE {
+        if _direction != FastQCConstants::FORWARD_TYPE
+            && _direction != FastQCConstants::REVERSE_TYPE
+        {
             panic!("Direction of hit must be FORWARD or REVERSE");
         }
         return ContaminantHit {
@@ -1935,7 +2076,7 @@ impl OverRepresentedSeqs {
 
         for (seq, seq_count) in self.sequences.clone() {
             let percentage: f64 = seq_count as f64 / self.count as f64 * 100.0;
-            if percentage > INDICATOR_CONFIG_OVERREPESENTED_WARN {
+            if percentage > FastQCConstants::INDICATOR_CONFIG_OVERREPESENTED_WARN {
                 let os: OverRepresentedSeq =
                     OverRepresentedSeq::new(seq.clone(), seq_count, percentage, &self.contaminants);
                 self.overrepresented_seqs.push(os);
@@ -1952,8 +2093,8 @@ impl OverRepresentedSeqs {
         self.count += 1;
         let mut seq = record.seq();
 
-        if FASTQC_CONFIG_DUP_LENGTH != 0 {
-            seq = &seq[0..FASTQC_CONFIG_DUP_LENGTH];
+        if FastQCConstants::FASTQC_CONFIG_DUP_LENGTH != 0 {
+            seq = &seq[0..FastQCConstants::FASTQC_CONFIG_DUP_LENGTH];
         } else if seq.len() > 75 {
             seq = &seq[0..50];
         }
@@ -2014,6 +2155,22 @@ impl OverRepresentedSeqs {
                 }
             }
         }
+    }
+
+    pub fn raise_error(&self) -> bool {
+        if self.overrepresented_seqs.len() > 0 {
+            if self.overrepresented_seqs[0].percentage() > FastQCConstants::OVEREPRESENTED_ERROR {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        if self.overrepresented_seqs.len() > 0 {
+            return true;
+        }
+        false
     }
 }
 
@@ -2185,6 +2342,20 @@ impl SeqDuplicationLevel {
         // We don't need to do anything since we use
         // the data structure from the overrepresented sequences
         // module.
+    }
+
+    pub fn raise_error(&self) -> bool {
+        if self.percent_diff_seq < FastQCConstants::DUPLICATION_ERROR {
+            return true;
+        }
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        if self.percent_diff_seq < FastQCConstants::DUPLICATION_WARNING {
+            return true;
+        }
+        false
     }
 }
 
@@ -2414,6 +2585,32 @@ impl AdapterContent {
             self.adapters[a].merge(&other.adapters[a]);
         }
     }
+
+    pub fn raise_error(&self) -> bool {
+        for i in 0..self.enrichments.len() {
+            for j in 0..self.enrichments[i].len() {
+                if self.enrichments[i][j] > FastQCConstants::ADAPTER_CONTENT_ERROR {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        if self.longest_adapter > self.longest_sequence {
+            return true;
+        }
+
+        for i in 0..self.enrichments.len() {
+            for j in 0..self.enrichments[i].len() {
+                if self.enrichments[i][j] > FastQCConstants::ADAPTER_CONTENT_WARNING {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2553,9 +2750,9 @@ impl KmerContent {
     pub fn new(kmer_ignore_smapling_interval: usize) -> KmerContent {
         let mut min_kmer_size = 7;
         let mut max_kmer_size = 7;
-        if FASTQC_CONFIG_KMER_SIZE != 0 {
-            min_kmer_size = FASTQC_CONFIG_KMER_SIZE;
-            max_kmer_size = FASTQC_CONFIG_KMER_SIZE;
+        if FastQCConstants::FASTQC_CONFIG_KMER_SIZE != 0 {
+            min_kmer_size = FastQCConstants::FASTQC_CONFIG_KMER_SIZE;
+            max_kmer_size = FastQCConstants::FASTQC_CONFIG_KMER_SIZE;
         }
         return KmerContent {
             kmers: HashMap::new(),
@@ -2833,6 +3030,26 @@ impl KmerContent {
             }
         }
     }
+
+    pub fn raise_error(&self) -> bool {
+        if !self.enriched_kmers.is_empty()
+            && (0.0 - self.enriched_kmers[0].lowest_pvalue.log10())
+                > FastQCConstants::KMER_CONTENT_ERROR
+        {
+            return true;
+        }
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        if !self.enriched_kmers.is_empty()
+            && (0.0 - self.enriched_kmers[0].lowest_pvalue.log10())
+                > FastQCConstants::KMER_CONTENT_WARNING
+        {
+            return true;
+        }
+        false
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2905,7 +3122,7 @@ impl PerTileQualityScore {
     pub fn process_sequence(&mut self, record: &impl Record) {
         // Check if we can skip counting because the module is being ignored anyway
         if self.total_count == 0 {
-            if INDICATOR_CONFIG_TILE_IGNORE > 0 {
+            if FastQCConstants::INDICATOR_CONFIG_TILE_IGNORE > 0 {
                 self.ignore_in_report = true;
             }
         }
@@ -3135,6 +3352,20 @@ impl PerTileQualityScore {
             }
         }
     }
+
+    pub fn raise_error(&self) -> bool {
+        if self.max_deviation > FastQCConstants::TILE_ERROR {
+            return true;
+        }
+        false
+    }
+
+    pub fn raise_warning(&self) -> bool {
+        if self.max_deviation > FastQCConstants::TILE_WARNING {
+            return true;
+        }
+        false
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -3330,6 +3561,311 @@ impl FastQC {
 
         // Finish method is crucial, don't forget it.
         // self.finish();
+    }
+
+    pub fn export_to_txt(&self, output_dir: &str) -> Result<(), Box<dyn Error>> {
+        let filepath = Path::new(output_dir).join(format!("{}.txt", "fastqc_data"));
+        println!("filepath: {}", filepath.to_str().unwrap());
+        let mut report = File::create(filepath)?;
+        writeln!(report, "##FastQC")?;
+        // Basic Statistics
+        let mut basic_stats_results = "pass";
+        if self.basic_stats.raise_error() {
+            basic_stats_results = "fail";
+        } else if self.basic_stats.raise_warning() {
+            basic_stats_results = "warn";
+        }
+        writeln!(report, ">>Basic Statistics\t{}", basic_stats_results)?;
+        writeln!(report, "#Measure\tValue")?;
+        writeln!(report, "Filename\t{}", self.basic_stats.file_name)?;
+        writeln!(report, "File type\t{}", self.basic_stats.file_type)?;
+        writeln!(report, "Encoding\t{}", self.basic_stats.phred.name())?;
+        writeln!(report, "Total Sequences\t{}", self.basic_stats.total_reads)?;
+        writeln!(report, "Total Bases\t{}", self.basic_stats.total_bases)?;
+        writeln!(
+            report,
+            "Sequences flagged as poor quality\t{}",
+            self.basic_stats.filter_counts
+        )?;
+        if self.basic_stats.max_length == self.basic_stats.min_length {
+            writeln!(report, "Sequence length\t{}", self.basic_stats.min_length)?;
+        } else {
+            writeln!(
+                report,
+                "Sequence length\t{}-{}",
+                self.basic_stats.min_length, self.basic_stats.max_length
+            )?;
+        }
+
+        writeln!(report, "%GC\t{}", self.basic_stats.gc_percentage)?;
+        writeln!(report, ">>END_MODULE")?;
+
+        // Per base sequence quality
+        let mut per_base_seq_quality_results = "pass";
+        if self.per_base_seq_quality.raise_error() {
+            per_base_seq_quality_results = "fail";
+        } else if self.per_base_seq_quality.raise_warning() {
+            per_base_seq_quality_results = "warn";
+        }
+        writeln!(
+            report,
+            ">>Per base sequence quality\t{}",
+            per_base_seq_quality_results
+        )?;
+        writeln!(
+            report,
+            "#Base\tMean\tMedian\tLower Quartile\tUpper Quartile\t10th Percentile\t90th Percentile"
+        )?;
+
+        for i in 0..self.per_base_seq_quality.base_pos.len() {
+            writeln!(
+                report,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                self.per_base_seq_quality.xlabels[i],
+                self.per_base_seq_quality.mean[i],
+                self.per_base_seq_quality.median[i],
+                self.per_base_seq_quality.lower_quartile[i],
+                self.per_base_seq_quality.upper_quartile[i],
+                self.per_base_seq_quality.lowest[i],
+                self.per_base_seq_quality.highest[i]
+            )?;
+        }
+
+        writeln!(report, ">>END_MODULE")?;
+
+        // Per tile sequence quality
+        let mut per_tile_quality_score_results = "pass";
+        if self.per_tile_quality_score.raise_error() {
+            per_tile_quality_score_results = "fail";
+        } else if self.per_tile_quality_score.raise_warning() {
+            per_tile_quality_score_results = "warn";
+        }
+        writeln!(
+            report,
+            ">>Per tile sequence quality\t{}",
+            per_tile_quality_score_results
+        )?;
+        writeln!(report, "#Tile\tBase\tMean")?;
+        for i in 0..self.per_tile_quality_score.tiles.len() {
+            for j in 0..self.per_tile_quality_score.x_labels.len() {
+                writeln!(
+                    report,
+                    "{}\t{}\t{}",
+                    self.per_tile_quality_score.tiles[i],
+                    self.per_tile_quality_score.x_labels[j],
+                    self.per_tile_quality_score.means[i][j],
+                )?;
+            }
+        }
+        writeln!(report, ">>END_MODULE")?;
+
+        // Per sequence quality scores
+        let mut per_seq_quality_score_results = "pass";
+        if self.per_seq_quality_score.raise_error() {
+            per_seq_quality_score_results = "fail";
+        } else if self.per_seq_quality_score.raise_warning() {
+            per_seq_quality_score_results = "warn";
+        }
+        writeln!(
+            report,
+            ">>Per sequence quality scores\t{}",
+            per_seq_quality_score_results
+        )?;
+        writeln!(report, "#Quality\tCount")?;
+        for i in 0..self.per_seq_quality_score.x_category_quality.len() {
+            writeln!(
+                report,
+                "{}\t{}",
+                self.per_seq_quality_score.x_category_quality[i],
+                self.per_seq_quality_score.y_category_count[i],
+            )?;
+        }
+        writeln!(report, ">>END_MODULE")?;
+
+        // Per base sequence content
+        let mut per_base_seq_content_results = "pass";
+        if self.per_base_seq_content.raise_error() {
+            per_base_seq_content_results = "fail";
+        } else if self.per_base_seq_content.raise_warning() {
+            per_base_seq_content_results = "warn";
+        }
+        writeln!(
+            report,
+            ">>Per base sequence content\t{}",
+            per_base_seq_content_results
+        )?;
+        writeln!(report, "#Base\tG\tA\tT\tC")?;
+        for i in 0..self.per_base_seq_content.x_category.len() {
+            writeln!(
+                report,
+                "{}\t{}\t{}\t{}\t{}",
+                self.per_base_seq_content.x_category[i],
+                self.per_base_seq_content.g_counts[i],
+                self.per_base_seq_content.a_counts[i],
+                self.per_base_seq_content.t_counts[i],
+                self.per_base_seq_content.c_counts[i],
+            )?;
+        }
+
+        writeln!(report, ">>END_MODULE")?;
+
+        // Per sequence GC content
+        let mut per_seq_gc_content_results = "pass";
+        if self.per_seq_gc_content.raise_error() {
+            per_seq_gc_content_results = "fail";
+        } else if self.per_seq_gc_content.raise_warning() {
+            per_seq_gc_content_results = "warn";
+        }
+        writeln!(
+            report,
+            ">>Per sequence GC content\t{}",
+            per_seq_gc_content_results
+        )?;
+        writeln!(report, "#GC Content\tCount")?;
+        for i in 0..self.per_seq_gc_content.x_category.len() {
+            writeln!(
+                report,
+                "{}\t{}",
+                self.per_seq_gc_content.x_category[i], self.per_seq_gc_content.y_gc_distribution[i]
+            )?;
+        }
+
+        writeln!(report, ">>END_MODULE")?;
+
+        // Per base N content
+        let mut per_base_n_content_results = "pass";
+        if self.per_base_n_content.raise_error() {
+            per_base_n_content_results = "fail";
+        } else if self.per_base_n_content.raise_warning() {
+            per_base_n_content_results = "warn";
+        }
+        writeln!(
+            report,
+            ">>Per base N content\t{}",
+            per_base_n_content_results
+        )?;
+        writeln!(report, "#Base\tN-Count")?;
+        for i in 0..self.per_base_n_content.x_categories.len() {
+            writeln!(
+                report,
+                "{}\t{}",
+                self.per_base_n_content.x_categories[i], self.per_base_n_content.n_counts[i]
+            )?;
+        }
+
+        writeln!(report, ">>END_MODULE")?;
+
+        // Sequence Length Distribution
+        let mut seq_len_distribution_results = "pass";
+        if self.seq_len_distribution.raise_error() {
+            seq_len_distribution_results = "fail";
+        } else if self.seq_len_distribution.raise_warning() {
+            seq_len_distribution_results = "warn";
+        }
+        writeln!(
+            report,
+            ">>Sequence Length Distribution\t{}",
+            seq_len_distribution_results
+        )?;
+        writeln!(report, "#Length\tCount")?;
+        for i in 0..self.seq_len_distribution.x_categories.len() {
+            writeln!(
+                report,
+                "{}\t{}",
+                self.seq_len_distribution.x_categories[i],
+                self.seq_len_distribution.graph_counts[i]
+            )?;
+        }
+        writeln!(report, ">>END_MODULE")?;
+
+        // Overrepresented sequences
+
+        if self.seq_duplication_level.is_some() {
+            let seq_duplication_level = self.seq_duplication_level.as_ref().unwrap();
+            let mut seq_duplication_level_results = "pass";
+            if seq_duplication_level.raise_error() {
+                seq_duplication_level_results = "fail";
+            } else if seq_duplication_level.raise_warning() {
+                seq_duplication_level_results = "warn";
+            }
+            writeln!(
+                report,
+                ">>Overrepresented sequences\t{}",
+                seq_duplication_level_results
+            )?;
+
+            writeln!(
+                report,
+                "#Total Deduplicated Percentage\t{}",
+                seq_duplication_level.percent_diff_seq
+            )?;
+            writeln!(report, "#Duplication Level\tPercentage of total")?;
+            for i in 0..seq_duplication_level.labels.len() {
+                writeln!(
+                    report,
+                    "{}\t{}",
+                    seq_duplication_level.labels[i], seq_duplication_level.total_percentages[i],
+                )?;
+            }
+            writeln!(report, ">>END_MODULE")?;
+        }
+
+        // Sequence Duplication Levels
+        let mut overrepresented_seqs_results = "pass";
+        if self.overrepresented_seqs.raise_error() {
+            overrepresented_seqs_results = "fail";
+        } else if self.overrepresented_seqs.raise_warning() {
+            overrepresented_seqs_results = "warn";
+        }
+        writeln!(
+            report,
+            ">>Overrepresented sequences\t{}",
+            overrepresented_seqs_results
+        )?;
+        writeln!(report, "#Sequence\tCount\tPercentage\tPossible Source")?;
+
+        for seqs in &self.overrepresented_seqs.overrepresented_seqs {
+            let mut hit_result = "".to_string();
+            if seqs.contaminant_hit.is_none() {
+                hit_result = "No Hit".to_string();
+            } else {
+                hit_result = seqs.contaminant_hit.clone().unwrap().value_string();
+            }
+            writeln!(
+                report,
+                "{}\t{}\t{}\t{}",
+                seqs.seq(),
+                seqs.count(),
+                seqs.percentage(),
+                hit_result
+            )?;
+        }
+        writeln!(report, ">>END_MODULE")?;
+
+        // Adapter Content
+        let mut adapter_content_results = "pass";
+        if self.adapter_content.raise_error() {
+            adapter_content_results = "fail";
+        } else if self.adapter_content.raise_warning() {
+            adapter_content_results = "warn";
+        }
+        writeln!(report, ">>Adapter Content\t{}", adapter_content_results)?;
+        writeln!(
+            report,
+            "#Position\t{}",
+            self.adapter_content.labels.join("\t")
+        )?;
+
+        for i in 0..self.adapter_content.x_labels.len() {
+            let mut row = self.adapter_content.x_labels[i].clone();
+            for j in 0..self.adapter_content.enrichments.len() {
+                row = row + &format!("\t{}", self.adapter_content.enrichments[j][i]);
+            }
+            writeln!(report, "{}", row)?;
+        }
+        writeln!(report, ">>END_MODULE")?;
+
+        Ok(())
     }
 }
 

@@ -10,11 +10,12 @@ version = "0.2.1"
 anyhow = "1.0.2"
 bit-vec = "0.6.3"
 blake2 = "0.9"
+csv = "1.1.6"
+num_cpus = "1.13.1"
 openssl = {version = "0.10", features = ["vendored"]}
 # hashbrown = { version = "0.12", features = ["serde"] }
 bwa = {git = "https://github.com/yjcyxky/rust-bwa", rev = "360ff84"}
-# concurrent hash map
-chashmap-serde = "2.2.3"
+
 digest = "0.9.0"
 executor-service = {git = "https://github.com/yerlibilgin/executor-service.git"}
 exitcode = "1.1.2"
@@ -27,6 +28,7 @@ maplit = "1.0.2"
 math = "0.10.0"
 md-5 = "0.9.1"
 probability = "0.19.1"
+noodles = {version = "0.29.0", features = ["bam", "bed", "gff", "gtf", "sam"]}
 regex = "1.3.9"
 rust-htslib = "0.40.2"
 serde = {version = "1.0.59", features = ["derive"]}
@@ -34,6 +36,7 @@ serde_json = "1.0.59"
 stderrlog = "0.5.4"
 structopt = "0.3.17"
 time = "0.3.20"
+store-interval-tree = "0.4.0"
 
 [profile.release]
 debug = false

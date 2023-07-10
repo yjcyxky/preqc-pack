@@ -8,6 +8,75 @@ use std::io::Error;
 use std::path::Path;
 use std::sync::Arc;
 
+#[allow(dead_code)]
+pub struct FastQCConstants {}
+impl FastQCConstants {
+    pub const DEFAULT_NUMBER_OF_WINDOWS: i32 = 400;
+    pub const DEFAULT_CHUNK_SIZE: i32 = 1000;
+
+    pub const SANGER_ENCODING_OFFSET: usize = 33;
+    pub const ILLUMINA_1_3_ENCODING_OFFSET: usize = 64;
+    pub const SANGER_ILLUMINA_1_9: &str = "Sanger / Illumina 1.9";
+    pub const ILLUMINA_1_3: &str = "Illumina 1.3";
+    pub const ILLUMINA_1_5: &str = "Illumina 1.5";
+
+    pub const FORWARD_TYPE: usize = 1;
+    pub const REVERSE_TYPE: usize = 2;
+
+    pub const FASTQC_CONFIG_DUP_LENGTH: usize = 0;
+    pub const FASTQC_CONFIG_KMER_SIZE: usize = 0;
+
+    pub const INDICATOR_CONFIG_TILE_IGNORE: usize = 0;
+    pub const INDICATOR_CONFIG_OVERREPESENTED_WARN: f64 = 0.1;
+
+    pub const DUPLICATION_WARNING: f64 = 70.0;
+    pub const DUPLICATION_ERROR: f64 = 50.0;
+
+    pub const KMER_CONTENT_WARNING: f64 = 2.0;
+    pub const KMER_CONTENT_ERROR: f64 = 5.0;
+
+    pub const N_CONTENT_WARNING: f64 = 5.0;
+    pub const N_CONTENT_ERROR: f64 = 20.0;
+
+    pub const OVEREPRESENTED_WARNING: f64 = 0.1;
+    pub const OVEREPRESENTED_ERROR: f64 = 1.0;
+
+    pub const QUALITY_BASE_LOWER_WARNING: f64 = 10.0;
+    pub const QUALITY_BASE_LOWER_ERROR: f64 = 5.0;
+    pub const QUALITY_BASE_MEDIAN_WARNING: f64 = 25.0;
+    pub const QUALITY_BASE_MEDIAN_ERROR: f64 = 20.0;
+
+    pub const SEQUENCE_WARNING: f64 = 10.0;
+    pub const SEQUENCE_ERROR: f64 = 20.0;
+
+    pub const GC_SEQUENCE_WARNING: f64 = 15.0;
+    pub const GC_SEQUENCE_ERROR: f64 = 30.0;
+
+    pub const QUALITY_SEQUENCE_WARNING: usize = 20;
+    pub const QUALITY_SEQUENCE_ERROR: usize = 27;
+
+    pub const TILE_WARNING: f64 = 5.0;
+    pub const TILE_ERROR: f64 = 10.0;
+
+    pub const SEQUENCE_LENGTH_WARNING: usize = 1;
+    pub const SEQUENCE_LENGTH_ERROR: usize = 1;
+
+    pub const ADAPTER_CONTENT_WARNING: f64 = 5.0;
+    pub const ADAPTER_CONTENT_ERROR: f64 = 10.0;
+
+    pub const DUPLICATION_IGNORE: usize = 0;
+    pub const KMER_IGNORE: usize = 0;
+    pub const N_CONTENT_IGNORE: usize = 0;
+    pub const OVEREPRESENTED_IGNORE: usize = 0;
+    pub const QUALITY_BASE_IGNORE: usize = 0;
+    pub const SEQUENCE_IGNORE: usize = 0;
+    pub const GC_QUALITY_IGNORE: usize = 0;
+    pub const QUALITY_SEQUENCE_IGNORE: usize = 0;
+    pub const TILE_IGNORE: usize = 0;
+    pub const SEQUENCE_LENGTH_IGNORE: usize = 0;
+    pub const ADAPTER_IGNORE: usize = 0;
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FastQCConfig {
     overrepresented_max_unique_seq_count: Option<usize>,
